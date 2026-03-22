@@ -86,7 +86,7 @@ def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run backtest")
     parser.add_argument("--strategy", required=True,
-                        choices=["darvas", "dbw", "candlestick", "support_resistance", "ema_crossover"],
+                        choices=["darvas", "dbw", "candlestick", "sr_breakout", "support_resistance", "ma_crossover", "ema_crossover"],
                         help="Strategy to backtest")
     parser.add_argument("--pair", required=True, help="Trading pair (e.g. BTC/IDR)")
     parser.add_argument("--timeframe", default="1h", help="Candle timeframe")

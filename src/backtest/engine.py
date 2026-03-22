@@ -21,7 +21,9 @@ STRATEGY_REGISTRY = {
     "dbw": (detect_dbw, "dbw_signal", calculate_dbw_levels),
     "candlestick": (detect_candlestick_patterns, "candle_signal", calculate_candle_levels),
     "support_resistance": (detect_sr_breakouts, "sr_signal", calculate_sr_levels),
+    "sr_breakout": (detect_sr_breakouts, "sr_signal", calculate_sr_levels),
     "ema_crossover": (detect_ema_crossovers, "ema_signal", calculate_ema_levels),
+    "ma_crossover": (detect_ema_crossovers, "ema_signal", calculate_ema_levels),
 }
 
 
