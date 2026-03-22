@@ -9,8 +9,14 @@ from src.config import load_config
 from src.data.database import get_connection, init_db, upsert_ohlcv
 
 
-def create_exchange(config: dict = None) -> ccxt.Exchange:
-    """Create a CCXT exchange instance for Tokocrypto."""
+def create_exchange(config: dict = None, authenticated: bool = False) -> ccxt.Exchange:
+    """Create a CCXT exchange instance.
+
+    Args:
+        config: Config dict. Loaded from file if None.
+        authenticated: If True, include API keys (for trading).
+                       If False, create unauthenticated instance (for public data).
+    """
     if config is None:
         config = load_config()
 
@@ -27,16 +33,18 @@ def create_exchange(config: dict = None) -> ccxt.Exchange:
         print(f"Exchange '{exchange_id}' not found in ccxt, falling back to 'binance'")
         exchange_class = ccxt.binance
 
-    exchange = exchange_class({
-        "apiKey": exc_cfg.get("api_key", ""),
-        "secret": exc_cfg.get("secret", ""),
+    options = {
         "enableRateLimit": exc_cfg.get("rate_limit", True),
         "options": {
             "defaultType": "spot",
         },
-    })
+    }
 
-    return exchange
+    if authenticated:
+        options["apiKey"] = exc_cfg.get("api_key", "")
+        options["secret"] = exc_cfg.get("secret", "")
+
+    return exchange_class(options)
 
 
 def download_ohlcv(pair: str, timeframe: str, days: int = 365,
@@ -93,7 +101,7 @@ def download_ohlcv(pair: str, timeframe: str, days: int = 365,
         if not candles:
             break
 
-        count = upsert_ohlcv(conn, pair, timeframe, candles)
+        upsert_ohlcv(conn, pair, timeframe, candles)
         total_candles += len(candles)
 
         last_ts = candles[-1][0]

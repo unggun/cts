@@ -52,7 +52,7 @@ class LiveTrader:
             sys.exit(1)
 
         # Create exchange with live credentials
-        self.exchange = create_exchange(self.config)
+        self.exchange = create_exchange(self.config, authenticated=True)
 
         # Verify API connection and permissions
         self._verify_connection()
