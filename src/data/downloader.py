@@ -1,7 +1,7 @@
 """Download OHLCV data from Tokocrypto via CCXT and store in SQLite."""
 import argparse
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import ccxt
 
@@ -16,9 +16,11 @@ def create_exchange(config: dict = None) -> ccxt.Exchange:
 
     exc_cfg = config["exchange"]
 
-    # Tokocrypto is Binance-powered — CCXT supports it directly
-    # If 'tokocrypto' isn't available in your ccxt version, fall back to binance
+    # Tokocrypto's CCXT implementation has parsing issues — use binance instead
+    # (Tokocrypto is Binance-powered so the API is compatible)
     exchange_id = exc_cfg.get("name", "tokocrypto")
+    if exchange_id == "tokocrypto":
+        exchange_id = "binance"
     try:
         exchange_class = getattr(ccxt, exchange_id)
     except AttributeError:
@@ -57,8 +59,8 @@ def download_ohlcv(pair: str, timeframe: str, days: int = 365,
     conn = get_connection()
 
     # Calculate time range
-    since = int((datetime.utcnow() - timedelta(days=days)).timestamp() * 1000)
-    now = int(datetime.utcnow().timestamp() * 1000)
+    since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     # Map timeframe to milliseconds for pagination
     tf_ms = {
@@ -95,7 +97,7 @@ def download_ohlcv(pair: str, timeframe: str, days: int = 365,
         total_candles += len(candles)
 
         last_ts = candles[-1][0]
-        last_dt = datetime.utcfromtimestamp(last_ts / 1000)
+        last_dt = datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc)
         print(f"  Fetched {len(candles)} candles up to {last_dt.isoformat()}"
               f" (total: {total_candles})")
 
