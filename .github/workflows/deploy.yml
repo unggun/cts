@@ -1,0 +1,35 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            cd /opt/cts
+
+            # Pull latest code
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Install/update dependencies
+            /opt/cts/venv/bin/pip install -r requirements.txt --quiet
+
+            # Reinitialize database (safe — only creates missing tables)
+            /opt/cts/venv/bin/python -c "from src.data.database import init_db; init_db()"
+
+            # Restart services if running
+            sudo systemctl restart cts-paper-trader 2>/dev/null || true
+            sudo systemctl restart cts-downloader.timer 2>/dev/null || true
+
+            echo "Deploy complete: $(date)"

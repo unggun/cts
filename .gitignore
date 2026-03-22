@@ -1,0 +1,5 @@
+data/trading.db
+config.yaml
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,109 @@
+# ============================================================
+# Crypto Auto-Learning Trading System — Configuration
+# ============================================================
+# Copy this to config.yaml and fill in your values.
+# NEVER commit config.yaml to version control.
+# ============================================================
+
+exchange:
+  name: tokocrypto
+  api_key: "YOUR_API_KEY"
+  secret: "YOUR_SECRET_KEY"
+  # Sandbox mode — set true for paper trading against real market data
+  # but without executing real orders
+  sandbox: true
+  rate_limit: true
+
+trading:
+  pairs:
+    - "BTC/IDR"
+    - "ETH/IDR"
+  timeframes:
+    - "1h"    # Primary analysis timeframe
+    - "4h"    # Confirmation timeframe
+    - "1d"    # Trend context
+  # How many days of historical data to keep
+  history_days: 365
+
+strategy:
+  # Default strategy parameters — these get updated by the auto-learner
+  darvas:
+    # Number of days consolidation before breakout (4-7 typical)
+    min_consolidation_days: 4
+    max_consolidation_days: 7
+    # Volume confirmation threshold (ratio vs 20-period average)
+    volume_ratio_min: 1.2
+    # Stop loss: percentage below box bottom
+    stop_loss_pct: 0.03
+    # Risk-reward minimum to take a trade
+    min_risk_reward: 2.0
+
+  dbw:
+    # DBW-specific parameters
+    lookback_period: 20
+    breakout_threshold: 0.02
+    volume_confirmation: true
+
+  candlestick:
+    require_trend_context: true
+    volume_confirmation: true
+    min_strength: "moderate"   # weak, moderate, strong
+    atr_sl_multiplier: 1.5
+    min_risk_reward: 2.0
+
+  support_resistance:
+    swing_lookback: 5
+    cluster_tolerance_pct: 0.005
+    min_touches: 2
+    volume_confirmation: true
+    breakout_threshold_pct: 0.002
+    recalc_interval: 50
+    stop_buffer_pct: 0.005
+    min_risk_reward: 2.0
+
+  ema_crossover:
+    fast_period: 8
+    slow_period: 21
+    trend_period: 50
+    use_ema: true              # false = use SMA instead
+    volume_confirmation: true
+    require_alignment: false   # require all 3 EMAs aligned
+    pullback_enabled: true     # detect pullback-to-EMA bounces
+    pullback_tolerance_atr: 0.3
+    sl_atr_multiplier: 1.5
+    min_risk_reward: 2.0
+    min_risk_reward: 2.0
+
+risk:
+  # Maximum percentage of portfolio per trade
+  max_position_pct: 0.05
+  # Maximum number of concurrent positions
+  max_positions: 3
+  # Maximum daily loss before stopping (percentage)
+  max_daily_loss_pct: 0.03
+  # Kelly criterion fraction (use half-Kelly for safety)
+  kelly_fraction: 0.5
+
+simulation:
+  # Monte Carlo settings
+  num_paths: 10000
+  initial_capital: 10000000  # IDR 10 million example
+  confidence_level: 0.95
+
+learning:
+  # Claude API for auto-analysis
+  claude_api_key: "YOUR_CLAUDE_API_KEY"
+  claude_model: "claude-sonnet-4-20250514"
+  # How many trades minimum before running analysis
+  min_trades_for_analysis: 30
+  # Analysis schedule (used by n8n/cron)
+  analysis_interval_hours: 168  # Weekly
+
+notifications:
+  telegram:
+    enabled: false
+    bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+    chat_id: "YOUR_CHAT_ID"
+
+database:
+  path: "data/trading.db"
