@@ -14,12 +14,11 @@ Schedule this via cron or n8n on your VPS:
   # Weekly on Sunday at 00:00
   0 0 * * 0 cd /opt/crypto-trading-system && python -m src.run_learning_cycle
 """
-import json
 import argparse
 from datetime import datetime
 
 from src.config import load_config
-from src.data.database import init_db, get_connection
+from src.data.database import init_db
 from src.data.downloader import download_all
 from src.backtest.runner import run_backtest
 from src.simulation.monte_carlo import run_simulation
@@ -140,8 +139,6 @@ def run_all_strategies(skip_download: bool = False, dry_run: bool = False):
     """Run learning cycle for all strategies and send a combined summary."""
     config = load_config()
     strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick"]
-    all_strategy_results = {}
-
     # Download once
     if not skip_download:
         init_db()
@@ -242,7 +239,6 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
 
     try:
         import requests
-        from src.data.database import get_connection
         from src.learning.parameter_store import get_performance_trend
 
         lines = ["📊 *Multi-Strategy Weekly Summary*\n"]

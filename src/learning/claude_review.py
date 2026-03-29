@@ -8,11 +8,9 @@ findings and uses Claude to:
 4. Track the evolution of strategy performance
 """
 import json
-from datetime import datetime
-from typing import Optional
 
 from src.config import load_config
-from src.data.database import get_connection, init_db, save_parameters, load_latest_parameters
+from src.data.database import get_connection, save_parameters, load_latest_parameters
 from src.learning.analyzer import analyze_winners_vs_losers, analyze_time_patterns
 from src.learning.filter_rules import (
     init_filter_rules_table, save_filter_rules,
