@@ -18,7 +18,7 @@ import argparse
 from datetime import datetime
 
 from src.config import load_config
-from src.data.database import init_db
+from src.data.database import init_db, get_connection, load_latest_parameters
 from src.data.downloader import download_all
 from src.backtest.runner import run_backtest
 from src.simulation.monte_carlo import run_simulation
@@ -127,6 +127,11 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     sim_results = run_simulation(strategy=strategy)
 
     # ── Quality gates ──
+    # Skip gates on first run (no saved parameters yet) — allow initial tuning
+    conn = get_connection()
+    has_prior_params = load_latest_parameters(conn, strategy) is not None
+    conn.close()
+
     gate_cfg = config.get("learning", {})
     passed, gate_failures = check_quality_gates(
         all_results,
@@ -136,10 +141,16 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         min_total_trades=gate_cfg.get("min_total_trades", 100),
     )
     if not passed:
-        print("\n  ⚠️ Quality gates FAILED:")
-        for f in gate_failures:
-            print(f"    - {f}")
-        print("  Parameter updates will be blocked this cycle.")
+        if not has_prior_params:
+            print("\n  ⚠️ Quality gates FAILED (but first run — allowing initial tuning):")
+            for f in gate_failures:
+                print(f"    - {f}")
+            passed = True  # Allow first-run tuning
+        else:
+            print("\n  ⚠️ Quality gates FAILED:")
+            for f in gate_failures:
+                print(f"    - {f}")
+            print("  Parameter updates will be blocked this cycle.")
 
     # ── Step 5: Claude review ──
     print(f"\n[5/6] Running Claude AI review...")
