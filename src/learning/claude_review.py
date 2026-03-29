@@ -115,6 +115,12 @@ Based on this analysis, provide:
 
 6. **Updated Parameters**: Output the complete updated parameters as a JSON block that can be directly loaded into the system.
 
+IMPORTANT constraints:
+- Do NOT skip more than 1 day of the week. Skipping multiple days kills too many opportunities.
+- Parameter changes should be incremental (10-30% adjustments), not dramatic swings.
+- If stop_loss win rate is 0%, the top priority is widening stops — other optimizations are secondary.
+- Filter rules should target features with effect_size > 0.5 to avoid over-filtering.
+
 Be specific and actionable. Include the exact threshold values for filters.
 Respond with valid JSON in the following structure:
 ```json

@@ -139,7 +139,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
 def run_all_strategies(skip_download: bool = False, dry_run: bool = False):
     """Run learning cycle for all strategies and send a combined summary."""
     config = load_config()
-    strategies = ["darvas", "sr_breakout", "ma_crossover", "ema_crossover"]
+    strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick"]
     all_strategy_results = {}
 
     # Download once
