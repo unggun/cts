@@ -613,7 +613,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Live trading")
     parser.add_argument("--strategy", default="darvas",
-                        choices=["darvas", "dbw", "candlestick", "sr_breakout", "ma_crossover"])
+                        choices=["darvas", "dbw", "candlestick", "sr_breakout", "ma_crossover", "rsi_vwap", "cvd", "macd"])
     parser.add_argument("--preflight", action="store_true",
                         help="Run pre-flight checks only")
     args = parser.parse_args()
