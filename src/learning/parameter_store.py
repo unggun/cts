@@ -5,32 +5,38 @@ what performance each version achieved, and whether the auto-learning
 is actually improving things.
 """
 import json
-import pandas as pd
 
 from src.data.database import get_connection, init_db
 
 
-def get_parameter_history(strategy: str) -> pd.DataFrame:
+def get_parameter_history(strategy: str) -> list[dict]:
     """Get the full history of parameter changes for a strategy."""
     init_db()
     conn = get_connection()
-    df = pd.read_sql_query("""
+    cur = conn.cursor()
+    cur.execute("""
         SELECT version, parameters_json, performance_json, source, notes, created_at
         FROM strategy_parameters
         WHERE strategy = ?
         ORDER BY version ASC
-    """, conn, params=[strategy])
+    """, (strategy,))
+    rows = cur.fetchall()
     conn.close()
 
-    if not df.empty:
-        df["parameters"] = df["parameters_json"].apply(
-            lambda x: json.loads(x) if x else {}
-        )
-        df["performance"] = df["performance_json"].apply(
-            lambda x: json.loads(x) if x else {}
-        )
-
-    return df
+    history = []
+    for row in rows:
+        entry = {
+            "version": row[0],
+            "parameters_json": row[1],
+            "performance_json": row[2],
+            "source": row[3],
+            "notes": row[4],
+            "created_at": row[5],
+            "parameters": json.loads(row[1]) if row[1] else {},
+            "performance": json.loads(row[2]) if row[2] else {},
+        }
+        history.append(entry)
+    return history
 
 
 def compare_versions(strategy: str, v1: int = None, v2: int = None) -> dict:
@@ -43,12 +49,12 @@ def compare_versions(strategy: str, v1: int = None, v2: int = None) -> dict:
         return {"error": "Need at least 2 versions to compare"}
 
     if v1 is None:
-        v1 = history.iloc[-2]["version"]
+        v1 = history[-2]["version"]
     if v2 is None:
-        v2 = history.iloc[-1]["version"]
+        v2 = history[-1]["version"]
 
-    row1 = history[history["version"] == v1].iloc[0]
-    row2 = history[history["version"] == v2].iloc[0]
+    row1 = next(h for h in history if h["version"] == v1)
+    row2 = next(h for h in history if h["version"] == v2)
 
     p1 = row1["parameters"]
     p2 = row2["parameters"]
@@ -61,8 +67,8 @@ def compare_versions(strategy: str, v1: int = None, v2: int = None) -> dict:
         if old != new:
             changes.append({
                 "parameter": key,
-                "v{}_value".format(v1): old,
-                "v{}_value".format(v2): new,
+                "old": old,
+                "new": new,
             })
 
     return {
@@ -77,10 +83,51 @@ def compare_versions(strategy: str, v1: int = None, v2: int = None) -> dict:
     }
 
 
+def get_performance_trend(strategy: str) -> list[dict]:
+    """Get win rate trend across parameter versions to see if learning is improving."""
+    history = get_parameter_history(strategy)
+    trend = []
+    for entry in history:
+        perf = entry["performance"]
+        wr = perf.get("win_rate")
+        if isinstance(wr, (int, float)):
+            wr_display = f"{wr:.1%}"
+        else:
+            wr_display = str(wr) if wr else "?"
+        trend.append({
+            "version": entry["version"],
+            "source": entry["source"],
+            "win_rate": wr,
+            "win_rate_display": wr_display,
+            "created_at": entry["created_at"],
+        })
+    return trend
+
+
+def format_param_diff(strategy: str) -> str:
+    """Format parameter changes between last two versions as a short string for notifications."""
+    diff = compare_versions(strategy)
+    if "error" in diff:
+        return ""
+    if not diff["changes"]:
+        return "No parameter changes"
+
+    lines = []
+    for c in diff["changes"]:
+        old_val = c["old"]
+        new_val = c["new"]
+        if isinstance(old_val, float):
+            old_val = f"{old_val:.4g}"
+        if isinstance(new_val, float):
+            new_val = f"{new_val:.4g}"
+        lines.append(f"  {c['parameter']}: {old_val} → {new_val}")
+    return "\n".join(lines)
+
+
 def print_parameter_history(strategy: str):
     """Pretty-print parameter evolution."""
     history = get_parameter_history(strategy)
-    if history.empty:
+    if not history:
         print(f"No parameter history for strategy '{strategy}'")
         return
 
@@ -88,7 +135,7 @@ def print_parameter_history(strategy: str):
     print(f"PARAMETER HISTORY: {strategy}")
     print(f"{'='*60}")
 
-    for _, row in history.iterrows():
+    for row in history:
         perf = row["performance"]
         wr = perf.get("win_rate", "?")
         if isinstance(wr, float):
@@ -101,11 +148,31 @@ def print_parameter_history(strategy: str):
                 print(f"  {k}: {v}")
 
 
+def print_performance_trend(strategy: str):
+    """Pretty-print win rate trend across versions."""
+    trend = get_performance_trend(strategy)
+    if not trend:
+        print(f"No performance data for strategy '{strategy}'")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"PERFORMANCE TREND: {strategy}")
+    print(f"{'='*60}")
+
+    for t in trend:
+        bar = ""
+        if isinstance(t["win_rate"], (int, float)) and t["win_rate"] is not None:
+            bar_len = int(t["win_rate"] * 50)
+            bar = "█" * bar_len + "░" * (50 - bar_len)
+        print(f"  v{t['version']:>3} ({t['source']:<20}) {t['win_rate_display']:>6}  {bar}")
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--strategy", default="darvas")
     parser.add_argument("--compare", action="store_true")
+    parser.add_argument("--trend", action="store_true")
     args = parser.parse_args()
 
     if args.compare:
@@ -114,7 +181,10 @@ if __name__ == "__main__":
             print(result["error"])
         else:
             print(f"\nComparing v{result['version_old']} → v{result['version_new']}")
+            print(f"  Performance: {result['performance_old']} → {result['performance_new']}")
             for c in result["changes"]:
-                print(f"  {c['parameter']}: {list(c.values())[1]} → {list(c.values())[2]}")
+                print(f"  {c['parameter']}: {c['old']} → {c['new']}")
+    elif args.trend:
+        print_performance_trend(args.strategy)
     else:
         print_parameter_history(args.strategy)

@@ -18,6 +18,10 @@ trading:
   pairs:
     - "BTC/IDR"
     - "ETH/IDR"
+    - "SOL/IDR"
+    - "BNB/IDR"
+    - "XRP/IDR"
+    - "DOGE/IDR"
   timeframes:
     - "1h"    # Primary analysis timeframe
     - "4h"    # Confirmation timeframe

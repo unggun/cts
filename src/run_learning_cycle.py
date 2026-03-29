@@ -25,7 +25,8 @@ from src.backtest.runner import run_backtest
 from src.simulation.monte_carlo import run_simulation
 from src.learning.analyzer import analyze_winners_vs_losers, analyze_time_patterns, print_analysis
 from src.learning.claude_review import run_claude_review
-from src.learning.parameter_store import print_parameter_history
+from src.learning.parameter_store import print_parameter_history, format_param_diff, print_performance_trend
+from src.learning.filter_rules import init_filter_rules_table
 
 
 def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
@@ -33,6 +34,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     """Run the complete auto-learning cycle."""
     config = load_config()
     init_db()
+    init_filter_rules_table()
 
     print("=" * 70)
     print(f"AUTO-LEARNING CYCLE — {datetime.now().isoformat()}")
@@ -110,6 +112,8 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
                   f"Win rate: {results['win_rate']:.1%} | "
                   f"Return: {results['total_return']:.2%} | "
                   f"Max DD: {results['max_drawdown']:.2%}")
+            if results.get("filtered_trades", 0) > 0:
+                print(f"    Filtered: {results['filtered_trades']} trades skipped by rules")
 
     if sim_results and "verdict" in sim_results:
         print(f"\n  Monte Carlo: {sim_results.get('verdict_emoji', '')} "
@@ -125,13 +129,44 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     print(f"\n  Parameter history:")
     print_parameter_history(strategy)
 
+    print(f"\n  Performance trend:")
+    print_performance_trend(strategy)
+
     # Send Telegram notification (if configured)
-    _send_telegram_summary(config, all_results, sim_results, review)
+    _send_telegram_summary(config, strategy, all_results, sim_results, review)
 
 
-def _send_telegram_summary(config: dict, results: dict,
+def run_all_strategies(skip_download: bool = False, dry_run: bool = False):
+    """Run learning cycle for all strategies and send a combined summary."""
+    config = load_config()
+    strategies = ["darvas", "sr_breakout", "ma_crossover", "ema_crossover"]
+    all_strategy_results = {}
+
+    # Download once
+    if not skip_download:
+        init_db()
+        print("[MULTI] Downloading data once for all strategies...")
+        try:
+            download_all(config)
+        except Exception as e:
+            print(f"  Warning: Download failed: {e}")
+
+    for strategy in strategies:
+        print(f"\n{'#' * 70}")
+        print(f"# STRATEGY: {strategy}")
+        print(f"{'#' * 70}")
+        try:
+            run_full_cycle(strategy=strategy, skip_download=True, dry_run=dry_run)
+        except Exception as e:
+            print(f"  Error running {strategy}: {e}")
+
+    # Send combined summary
+    _send_multi_strategy_telegram(config, strategies)
+
+
+def _send_telegram_summary(config: dict, strategy: str, results: dict,
                            sim_results: dict, review: dict):
-    """Send a summary notification via Telegram."""
+    """Send a summary notification via Telegram with strategy label and param diff."""
     tg_cfg = config.get("notifications", {}).get("telegram", {})
     if not tg_cfg.get("enabled", False):
         return
@@ -144,15 +179,17 @@ def _send_telegram_summary(config: dict, results: dict,
     try:
         import requests
 
-        lines = ["🤖 *Auto-Learning Cycle Complete*\n"]
+        lines = [f"🤖 *Auto-Learning Cycle Complete*"]
+        lines.append(f"📊 Strategy: *{strategy.upper()}*\n")
 
         for pair, r in results.items():
             if r.get("total_trades", 0) > 0:
-                lines.append(
-                    f"*{pair}*: {r['total_trades']} trades | "
-                    f"WR: {r['win_rate']:.0%} | "
-                    f"Return: {r['total_return']:.1%}"
-                )
+                line = (f"*{pair}*: {r['total_trades']} trades | "
+                        f"WR: {r['win_rate']:.0%} | "
+                        f"Return: {r['total_return']:.1%}")
+                if r.get("filtered_trades", 0) > 0:
+                    line += f" | Filtered: {r['filtered_trades']}"
+                lines.append(line)
 
         if sim_results and "verdict" in sim_results:
             lines.append(f"\nMonte Carlo: {sim_results.get('verdict_emoji', '')} {sim_results['verdict']}")
@@ -161,6 +198,24 @@ def _send_telegram_summary(config: dict, results: dict,
             lines.append("\n*Top Insight:*")
             if review["key_insights"]:
                 lines.append(f"_{review['key_insights'][0]}_")
+
+        # Confidence indicator
+        if isinstance(review, dict) and "confidence" in review:
+            conf = review["confidence"]
+            conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "⚪")
+            lines.append(f"\nConfidence: {conf_emoji} {conf}")
+            if conf == "low":
+                lines.append("⚠️ _Parameter update SKIPPED (low confidence)_")
+
+        # Parameter changes diff
+        param_diff = format_param_diff(strategy)
+        if param_diff:
+            lines.append(f"\n*Parameter Changes:*")
+            lines.append(f"```\n{param_diff}\n```")
+
+        # Filter rules count
+        if isinstance(review, dict) and review.get("filter_rules"):
+            lines.append(f"\n📋 {len(review['filter_rules'])} filter rules active")
 
         message = "\n".join(lines)
 
@@ -174,18 +229,64 @@ def _send_telegram_summary(config: dict, results: dict,
         print(f"  Telegram notification failed: {e}")
 
 
+def _send_multi_strategy_telegram(config: dict, strategies: list):
+    """Send a combined multi-strategy comparison via Telegram."""
+    tg_cfg = config.get("notifications", {}).get("telegram", {})
+    if not tg_cfg.get("enabled", False):
+        return
+
+    bot_token = tg_cfg.get("bot_token", "")
+    chat_id = tg_cfg.get("chat_id", "")
+    if not bot_token or not chat_id or "YOUR" in bot_token:
+        return
+
+    try:
+        import requests
+        from src.data.database import get_connection
+        from src.learning.parameter_store import get_performance_trend
+
+        lines = ["📊 *Multi-Strategy Weekly Summary*\n"]
+
+        for strategy in strategies:
+            trend = get_performance_trend(strategy)
+            if trend:
+                latest = trend[-1]
+                wr = latest.get("win_rate_display", "?")
+                lines.append(f"*{strategy}*: WR {wr} (v{latest['version']})")
+
+        lines.append("\n_Run parameter\\_store --trend for full history_")
+
+        message = "\n".join(lines)
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+        print("  Multi-strategy summary sent.")
+    except Exception as e:
+        print(f"  Multi-strategy summary failed: {e}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run full auto-learning cycle")
     parser.add_argument("--strategy", default="darvas",
                         choices=["darvas", "dbw", "candlestick", "sr_breakout", "ma_crossover"])
+    parser.add_argument("--all-strategies", action="store_true",
+                        help="Run cycle for all strategies with combined summary")
     parser.add_argument("--skip-download", action="store_true",
                         help="Skip OHLCV data download")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run without calling Claude API")
     args = parser.parse_args()
 
-    run_full_cycle(
-        strategy=args.strategy,
-        skip_download=args.skip_download,
-        dry_run=args.dry_run,
-    )
+    if args.all_strategies:
+        run_all_strategies(
+            skip_download=args.skip_download,
+            dry_run=args.dry_run,
+        )
+    else:
+        run_full_cycle(
+            strategy=args.strategy,
+            skip_download=args.skip_download,
+            dry_run=args.dry_run,
+        )

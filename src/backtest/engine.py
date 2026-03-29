@@ -14,6 +14,7 @@ from src.indicators.support_resistance import detect_sr_breakouts, calculate_sr_
 from src.indicators.ema_crossover import detect_ema_crossovers, calculate_ema_levels
 from src.indicators.features import extract_features
 from src.data.database import get_connection, save_backtest_trades, load_ohlcv
+from src.learning.filter_rules import load_active_filters, apply_filters
 
 # Strategy registry — maps strategy name to (detect_fn, signal_col, levels_fn)
 STRATEGY_REGISTRY = {
@@ -35,6 +36,10 @@ class BacktestEngine:
         self.params = params
         self.initial_capital = initial_capital
         self.run_id = f"{strategy}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Load active filter rules
+        self.filters = load_active_filters(strategy)
+        self.filtered_count = 0
 
         # State
         self.capital = initial_capital
@@ -98,6 +103,13 @@ class BacktestEngine:
 
                 # Extract features
                 features = extract_features(df, i)
+
+                # Apply filter rules
+                if self.filters:
+                    should_skip, skip_reason = apply_filters(features, self.filters)
+                    if should_skip:
+                        self.filtered_count += 1
+                        continue
 
                 # Open position
                 self.position = {
@@ -247,6 +259,7 @@ class BacktestEngine:
             "pair": pair,
             "timeframe": timeframe,
             "total_trades": len(self.trades),
+            "filtered_trades": self.filtered_count,
             "winners": len(winners),
             "losers": len(losers),
             "win_rate": len(winners) / len(self.trades),

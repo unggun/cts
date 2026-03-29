@@ -50,6 +50,17 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
 
     overall_win_rate = len(winners) / len(feat_df)
 
+    # Exit reason breakdown
+    exit_reason_stats = {}
+    if "exit_reason" in feat_df.columns:
+        for reason in feat_df["exit_reason"].dropna().unique():
+            reason_trades = feat_df[feat_df["exit_reason"] == reason]
+            reason_winners = reason_trades[reason_trades["is_winner"] == 1]
+            exit_reason_stats[reason] = {
+                "count": len(reason_trades),
+                "win_rate": len(reason_winners) / len(reason_trades) if len(reason_trades) > 0 else 0,
+            }
+
     findings = {
         "total_trades": len(feat_df),
         "winners": len(winners),
@@ -57,6 +68,7 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
         "overall_win_rate": overall_win_rate,
         "avg_win_pct": winners["pnl_pct"].mean() if len(winners) > 0 else 0,
         "avg_loss_pct": losers["pnl_pct"].mean() if len(losers) > 0 else 0,
+        "exit_reason_stats": exit_reason_stats,
         "feature_analysis": {},
         "suggested_filters": [],
         "warnings": [],

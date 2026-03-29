@@ -19,6 +19,7 @@ from src.data.downloader import create_exchange
 from src.data.database import get_connection, init_db, load_ohlcv, upsert_ohlcv, load_latest_parameters
 from src.backtest.engine import STRATEGY_REGISTRY
 from src.indicators.features import extract_features
+from src.learning.filter_rules import load_active_filters, apply_filters
 
 
 class PaperTrader:
@@ -38,6 +39,11 @@ class PaperTrader:
             self.params = self.config.get("strategy", {}).get(strategy, {})
         self.params["risk"] = self.config.get("risk", {})
         conn.close()
+
+        # Load active filter rules
+        self.filters = load_active_filters(strategy)
+        if self.filters:
+            print(f"  Loaded {len(self.filters)} active filter rules")
 
         # State
         self.positions = {}  # pair -> position dict
@@ -99,15 +105,24 @@ class PaperTrader:
         """Process a single pair — check exits and entries."""
         conn = get_connection()
 
-        # Fetch latest candles
-        try:
-            candles = self.exchange.fetch_ohlcv(pair, timeframe, limit=200)
-            if candles:
-                upsert_ohlcv(conn, pair, timeframe, candles)
-        except Exception as e:
-            print(f"  Error fetching {pair}: {e}")
-            conn.close()
-            return
+        # Fetch latest candles with retry
+        candles = None
+        for attempt in range(3):
+            try:
+                candles = self.exchange.fetch_ohlcv(pair, timeframe, limit=200)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    wait = (attempt + 1) * 5
+                    print(f"  Retry {attempt+1}/3 fetching {pair} in {wait}s: {e}")
+                    time.sleep(wait)
+                else:
+                    print(f"  Failed fetching {pair} after 3 attempts: {e}")
+                    conn.close()
+                    return
+
+        if candles:
+            upsert_ohlcv(conn, pair, timeframe, candles)
 
         # Load data from DB for analysis
         df = load_ohlcv(conn, pair, timeframe)
@@ -165,6 +180,15 @@ class PaperTrader:
                     max_pos = self.params.get("risk", {}).get("max_positions", 3)
                     if len(self.positions) < max_pos:
                         features = extract_features(df, last_idx)
+
+                        # Apply filter rules
+                        if self.filters:
+                            should_skip, skip_reason = apply_filters(features, self.filters)
+                            if should_skip:
+                                print(f"  ⏭️ FILTERED {pair}: {skip_reason}")
+                                conn.close()
+                                return
+
                         self._open_position(conn, pair, levels, features)
 
         conn.close()

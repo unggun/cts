@@ -28,8 +28,12 @@ jobs:
             # Reinitialize database (safe — only creates missing tables)
             /opt/cts/venv/bin/python -c "from src.data.database import init_db; init_db()"
 
-            # Restart services if running
-            sudo systemctl restart cts-paper-trader 2>/dev/null || true
+            # Restart all running paper trader instances
+            for unit in $(systemctl list-units --type=service --state=running --no-legend 'cts-paper-trader@*' | awk '{print $1}'); do
+              sudo systemctl restart "$unit"
+            done
+
+            # Restart timers
             sudo systemctl restart cts-downloader.timer 2>/dev/null || true
 
             echo "Deploy complete: $(date)"

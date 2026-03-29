@@ -34,6 +34,15 @@ python3 -m src.run_learning_cycle --strategy darvas --dry-run
 
 # Paper trading
 python3 -m src.execution.paper_trader --strategy darvas
+
+# Run all strategies in one cycle (with combined Telegram summary)
+python3 -m src.run_learning_cycle --all-strategies --dry-run
+
+# Parameter version comparison
+python3 -m src.learning.parameter_store --strategy darvas --compare
+
+# Performance trend across versions
+python3 -m src.learning.parameter_store --strategy darvas --trend
 ```
 
 ## Architecture
@@ -54,9 +63,17 @@ Strategy parameters are versioned in `strategy_parameters` table. The auto-learn
 
 `src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs → analyze winners/losers → Monte Carlo → Claude review → save updated parameters → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead.
 
+### Filter Rules
+
+`src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Rules are auto-refreshed each learning cycle.
+
+### Confidence-Gated Updates
+
+Claude returns a confidence level (low/medium/high). When confidence is "low", parameter updates are skipped to prevent degradation from uncertain analysis. Filter rules are still saved regardless of confidence.
+
 ### Database Schema
 
-Six tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_parameters` (versioned), `learning_sessions` (Claude review history), `simulation_results`, `trade_journal` (paper/live trades). Schema is in `src/data/database.py:init_db()`.
+Seven tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_parameters` (versioned), `learning_sessions` (Claude review history), `simulation_results`, `trade_journal` (paper/live trades), `filter_rules` (active trade filters). Schema is in `src/data/database.py:init_db()` and `src/learning/filter_rules.py:init_filter_rules_table()`.
 
 ### Feature Extraction
 

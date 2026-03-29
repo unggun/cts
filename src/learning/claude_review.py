@@ -14,6 +14,10 @@ from typing import Optional
 from src.config import load_config
 from src.data.database import get_connection, init_db, save_parameters, load_latest_parameters
 from src.learning.analyzer import analyze_winners_vs_losers, analyze_time_patterns
+from src.learning.filter_rules import (
+    init_filter_rules_table, save_filter_rules,
+    parse_analyzer_filters, parse_claude_filter_rules,
+)
 
 
 def build_analysis_prompt(findings: dict, time_patterns: dict,
@@ -37,6 +41,13 @@ def build_analysis_prompt(findings: dict, time_patterns: dict,
 ## Feature Analysis (Winner vs Loser differences)
 Top features by effect size:
 """
+    # Add exit reason breakdown if available
+    if findings.get("exit_reason_stats"):
+        prompt += "\n## Exit Reason Breakdown\n"
+        for reason, stats in findings["exit_reason_stats"].items():
+            prompt += f"- {reason}: {stats['count']} trades, {stats['win_rate']:.0%} win rate\n"
+
+    prompt += "\n"
     # Add top features
     if findings.get("feature_analysis"):
         sorted_features = sorted(
@@ -91,13 +102,18 @@ Based on this analysis, provide:
 
 2. **Parameter Recommendations**: Suggest specific changes to the strategy parameters. For each change, explain why and what improvement you expect.
 
-3. **Filter Rules**: Suggest concrete filter rules in the format:
-   - "Skip when [condition]" for conditions that predict losers
-   - "Prefer when [condition]" for conditions that predict winners
+3. **Filter Rules**: Suggest concrete, machine-parseable filter rules. Each rule must reference an exact feature name from the feature analysis above and use a comparison operator.
+   Format: "Skip when feature_name > threshold" or "Prefer when feature_name < threshold"
+   Use actual feature names (e.g., rsi_bull_divergence, upper_wick_ratio, mixed_ema_signals) and numeric thresholds.
 
 4. **Risk Assessment**: Based on the Monte Carlo results (if available) and win/loss patterns, should the position sizing be adjusted?
 
-5. **Updated Parameters**: Output the complete updated parameters as a JSON block that can be directly loaded into the system.
+5. **Stop-Loss Analysis**: CRITICAL — if the stop-loss win rate is below 10%, the stops are likely too tight. Consider:
+   - Widening stop_loss_pct or sl_atr_multiplier significantly (e.g., 1.5x to 3x current value)
+   - Using ATR-based stops instead of fixed percentages
+   - The current stop-loss win rate by exit reason is shown above — use this to calibrate
+
+6. **Updated Parameters**: Output the complete updated parameters as a JSON block that can be directly loaded into the system.
 
 Be specific and actionable. Include the exact threshold values for filters.
 Respond with valid JSON in the following structure:
@@ -105,7 +121,7 @@ Respond with valid JSON in the following structure:
 {
   "key_insights": ["insight1", "insight2", ...],
   "parameter_changes": [{"param": "name", "old": value, "new": value, "reason": "..."}],
-  "filter_rules": [{"rule": "...", "type": "skip|prefer", "expected_impact": "..."}],
+  "filter_rules": [{"rule": "Skip when feature_name > 0.15", "type": "skip", "expected_impact": "..."}],
   "risk_assessment": "...",
   "updated_parameters": { ... complete parameter dict ... },
   "confidence": "low|medium|high",
@@ -205,16 +221,39 @@ def run_claude_review(strategy: str = None, run_id: str = None,
             json.dumps(review),
         ))
 
-        # If Claude provided updated parameters, save them
+        # Confidence-gated parameter updates
+        confidence = review.get("confidence", "medium")
+        strat_name = strategy or "darvas"
+
         if "updated_parameters" in review:
-            version = save_parameters(
-                conn, strategy or "darvas",
-                review["updated_parameters"],
-                source="claude_auto_review",
-                performance={"win_rate": findings.get("overall_win_rate")},
-                notes=json.dumps(review.get("key_insights", []))
-            )
-            print(f"Saved updated parameters as version {version}")
+            if confidence == "low":
+                print(f"⚠️ Skipping parameter update — Claude confidence is LOW")
+                print(f"  Reason: {review.get('notes', 'insufficient data or unclear patterns')}")
+            else:
+                version = save_parameters(
+                    conn, strat_name,
+                    review["updated_parameters"],
+                    source="claude_auto_review",
+                    performance={"win_rate": findings.get("overall_win_rate")},
+                    notes=json.dumps(review.get("key_insights", []))
+                )
+                print(f"Saved updated parameters as version {version} (confidence: {confidence})")
+
+        # Save filter rules from Claude
+        if review.get("filter_rules"):
+            init_filter_rules_table()
+            structured_rules = parse_claude_filter_rules(review["filter_rules"])
+            if structured_rules:
+                save_filter_rules(strat_name, structured_rules, source="claude_review")
+                print(f"Saved {len(structured_rules)} filter rules from Claude review")
+
+        # Also save analyzer's suggested filters
+        if findings.get("suggested_filters"):
+            init_filter_rules_table()
+            analyzer_rules = parse_analyzer_filters(findings["suggested_filters"])
+            if analyzer_rules:
+                save_filter_rules(strat_name, analyzer_rules, source="analyzer")
+                print(f"Saved {len(analyzer_rules)} filter rules from analyzer")
 
         conn.commit()
         conn.close()
