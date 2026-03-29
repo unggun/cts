@@ -28,6 +28,44 @@ from src.learning.parameter_store import print_parameter_history, format_param_d
 from src.learning.filter_rules import init_filter_rules_table
 
 
+def check_quality_gates(all_results: dict,
+                        min_win_rate: float = 0.55,
+                        min_profit_factor: float = 1.5,
+                        max_drawdown: float = 0.20,
+                        min_total_trades: int = 100) -> tuple:
+    """Check if backtest results meet minimum quality thresholds.
+
+    Returns:
+        (passed: bool, failures: list[str])
+    """
+    failures = []
+
+    active = {p: r for p, r in all_results.items() if r.get("total_trades", 0) > 0}
+    if not active:
+        return False, ["No trades generated across any pair"]
+
+    total_trades = sum(r["total_trades"] for r in active.values())
+    if total_trades < min_total_trades:
+        failures.append(f"Insufficient trades: {total_trades} < {min_total_trades} minimum")
+
+    total_winners = sum(r.get("winners", 0) for r in active.values())
+    agg_win_rate = total_winners / total_trades if total_trades > 0 else 0
+    if agg_win_rate < min_win_rate:
+        failures.append(f"Win rate too low: {agg_win_rate:.1%} < {min_win_rate:.0%} minimum")
+
+    for pair, r in active.items():
+        pf = r.get("profit_factor", 0)
+        if pf < min_profit_factor:
+            failures.append(f"{pair} profit factor too low: {pf:.2f} < {min_profit_factor}")
+
+    for pair, r in active.items():
+        dd = r.get("max_drawdown", 0)
+        if dd > max_drawdown:
+            failures.append(f"{pair} max drawdown too high: {dd:.1%} > {max_drawdown:.0%}")
+
+    return len(failures) == 0, failures
+
+
 def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
                    dry_run: bool = False):
     """Run the complete auto-learning cycle."""
@@ -88,6 +126,21 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     print(f"\n[4/6] Running Monte Carlo simulation...")
     sim_results = run_simulation(strategy=strategy)
 
+    # ── Quality gates ──
+    gate_cfg = config.get("learning", {})
+    passed, gate_failures = check_quality_gates(
+        all_results,
+        min_win_rate=gate_cfg.get("min_win_rate", 0.55),
+        min_profit_factor=gate_cfg.get("min_profit_factor", 1.5),
+        max_drawdown=gate_cfg.get("max_drawdown", 0.20),
+        min_total_trades=gate_cfg.get("min_total_trades", 100),
+    )
+    if not passed:
+        print("\n  ⚠️ Quality gates FAILED:")
+        for f in gate_failures:
+            print(f"    - {f}")
+        print("  Parameter updates will be blocked this cycle.")
+
     # ── Step 5: Claude review ──
     print(f"\n[5/6] Running Claude AI review...")
     if dry_run:
@@ -96,6 +149,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         strategy=strategy,
         sim_results=sim_results,
         dry_run=dry_run,
+        block_param_updates=not passed,
     )
 
     # ── Step 6: Summary ──
@@ -138,7 +192,8 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
 def run_all_strategies(skip_download: bool = False, dry_run: bool = False):
     """Run learning cycle for all strategies and send a combined summary."""
     config = load_config()
-    strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick"]
+    strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick",
+                  "rsi_vwap", "cvd", "macd"]
     # Download once
     if not skip_download:
         init_db()
@@ -266,7 +321,8 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run full auto-learning cycle")
     parser.add_argument("--strategy", default="darvas",
-                        choices=["darvas", "dbw", "candlestick", "sr_breakout", "ma_crossover"])
+                        choices=["darvas", "dbw", "candlestick", "sr_breakout",
+                                 "ma_crossover", "rsi_vwap", "cvd", "macd"])
     parser.add_argument("--all-strategies", action="store_true",
                         help="Run cycle for all strategies with combined summary")
     parser.add_argument("--skip-download", action="store_true",

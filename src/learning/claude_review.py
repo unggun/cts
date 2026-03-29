@@ -137,7 +137,8 @@ Respond with valid JSON in the following structure:
 
 
 def run_claude_review(strategy: str = None, run_id: str = None,
-                      sim_results: dict = None, dry_run: bool = False) -> dict:
+                      sim_results: dict = None, dry_run: bool = False,
+                      block_param_updates: bool = False) -> dict:
     """Run a Claude-powered analysis of recent trading performance.
 
     Args:
@@ -145,6 +146,7 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         run_id: Specific backtest run to analyze
         sim_results: Optional Monte Carlo results to include
         dry_run: If True, just build the prompt without calling API
+        block_param_updates: If True, skip parameter updates regardless of confidence
 
     Returns:
         dict with Claude's analysis and recommendations
@@ -230,7 +232,9 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         strat_name = strategy or "darvas"
 
         if "updated_parameters" in review:
-            if confidence == "low":
+            if block_param_updates:
+                print(f"⚠️ Skipping parameter update — quality gates failed")
+            elif confidence == "low":
                 print(f"⚠️ Skipping parameter update — Claude confidence is LOW")
                 print(f"  Reason: {review.get('notes', 'insufficient data or unclear patterns')}")
             else:
