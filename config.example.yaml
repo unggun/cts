@@ -76,6 +76,29 @@ strategy:
     pullback_tolerance_atr: 0.3
     sl_atr_multiplier: 1.5
     min_risk_reward: 2.0
+
+  rsi_vwap:
+    rsi_period: 14
+    oversold_threshold: 30
+    exit_rsi: 50
+    volume_confirmation: true
+    volume_ratio_min: 1.0
+    sl_atr_multiplier: 2.0
+    min_risk_reward: 2.0
+
+  cvd:
+    lookback: 14
+    divergence_bars: 10
+    volume_confirmation: true
+    sl_atr_multiplier: 2.0
+    min_risk_reward: 2.0
+
+  macd:
+    fast_period: 3
+    slow_period: 15
+    signal_period: 3
+    volume_confirmation: true
+    sl_atr_multiplier: 1.5
     min_risk_reward: 2.0
 
 risk:
@@ -102,6 +125,11 @@ learning:
   min_trades_for_analysis: 30
   # Analysis schedule (used by n8n/cron)
   analysis_interval_hours: 168  # Weekly
+  # Quality gates — block parameter updates if backtest fails these
+  min_win_rate: 0.55
+  min_profit_factor: 1.5
+  max_drawdown: 0.20
+  min_total_trades: 100
 
 notifications:
   telegram:
