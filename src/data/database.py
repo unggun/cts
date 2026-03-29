@@ -4,7 +4,6 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-import pandas as pd
 
 from src.config import get_db_path
 
@@ -170,8 +169,9 @@ def upsert_ohlcv(conn: sqlite3.Connection, pair: str, timeframe: str,
 
 
 def load_ohlcv(conn: sqlite3.Connection, pair: str, timeframe: str,
-               start_ts: int = None, end_ts: int = None) -> pd.DataFrame:
+               start_ts: int = None, end_ts: int = None):
     """Load OHLCV data as a pandas DataFrame."""
+    import pandas as pd
     query = "SELECT timestamp, open, high, low, close, volume FROM ohlcv WHERE pair=? AND timeframe=?"
     params = [pair, timeframe]
     if start_ts:
@@ -213,8 +213,9 @@ def save_backtest_trades(conn: sqlite3.Connection, trades: list[dict]):
 
 
 def load_backtest_trades(conn: sqlite3.Connection, run_id: str = None,
-                         strategy: str = None) -> pd.DataFrame:
+                         strategy: str = None):
     """Load backtest trades as DataFrame."""
+    import pandas as pd
     query = "SELECT * FROM backtest_trades WHERE 1=1"
     params = []
     if run_id:
