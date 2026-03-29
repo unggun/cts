@@ -12,6 +12,9 @@ from src.indicators.dbw import detect_dbw, calculate_dbw_levels
 from src.indicators.candlestick import detect_candlestick_patterns, calculate_candle_levels
 from src.indicators.support_resistance import detect_sr_breakouts, calculate_sr_levels
 from src.indicators.ema_crossover import detect_ema_crossovers, calculate_ema_levels
+from src.indicators.rsi_vwap import detect_rsi_vwap, calculate_rsi_vwap_levels
+from src.indicators.cvd import detect_cvd_divergence, calculate_cvd_levels
+from src.indicators.macd import detect_macd, calculate_macd_levels
 from src.indicators.features import extract_features
 from src.data.database import get_connection, save_backtest_trades, load_ohlcv
 from src.learning.filter_rules import load_active_filters, apply_filters
@@ -25,6 +28,9 @@ STRATEGY_REGISTRY = {
     "sr_breakout": (detect_sr_breakouts, "sr_signal", calculate_sr_levels),
     "ema_crossover": (detect_ema_crossovers, "ema_signal", calculate_ema_levels),
     "ma_crossover": (detect_ema_crossovers, "ema_signal", calculate_ema_levels),
+    "rsi_vwap": (detect_rsi_vwap, "rsi_vwap_signal", calculate_rsi_vwap_levels),
+    "cvd": (detect_cvd_divergence, "cvd_signal", calculate_cvd_levels),
+    "macd": (detect_macd, "macd_signal", calculate_macd_levels),
 }
 
 
