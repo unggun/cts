@@ -221,10 +221,10 @@ def calculate_sr_levels(df: pd.DataFrame, idx: int, params: dict = None) -> dict
     For support break: stop above the broken level, target = next support
     """
     if params is None:
-        params = {"stop_buffer_pct": 0.005, "min_risk_reward": 2.0}
+        params = {"stop_buffer_pct": 0.015, "min_risk_reward": 2.0}
 
     sr = params if "stop_buffer_pct" in params else params.get("support_resistance", params)
-    stop_buffer = sr.get("stop_buffer_pct", 0.005)
+    stop_buffer = sr.get("stop_buffer_pct", 0.015)
     min_rr = sr.get("min_risk_reward", 2.0)
 
     entry = df.iloc[idx]["close"]

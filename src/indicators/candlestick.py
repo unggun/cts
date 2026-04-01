@@ -265,10 +265,10 @@ def detect_candlestick_patterns(df: pd.DataFrame, params: dict = None) -> pd.Dat
 def calculate_candle_levels(df: pd.DataFrame, idx: int, params: dict = None) -> dict:
     """Calculate trade levels for a candlestick signal using ATR-based stops."""
     if params is None:
-        params = {"atr_sl_multiplier": 1.5, "min_risk_reward": 2.0}
+        params = {"atr_sl_multiplier": 3.0, "min_risk_reward": 2.0}
 
     cs = params if "atr_sl_multiplier" in params else params.get("candlestick", params)
-    sl_mult = cs.get("atr_sl_multiplier", 1.5)
+    sl_mult = cs.get("atr_sl_multiplier", 3.0)
     min_rr = cs.get("min_risk_reward", 2.0)
 
     from src.indicators.features import _atr

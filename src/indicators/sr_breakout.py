@@ -177,10 +177,10 @@ def calculate_sr_levels(df: pd.DataFrame, idx: int,
       - Target = distance projected below
     """
     if params is None:
-        params = {"stop_loss_buffer_pct": 0.005, "min_risk_reward": 2.0}
+        params = {"stop_loss_buffer_pct": 0.015, "min_risk_reward": 2.0}
 
     sp = params if "stop_loss_buffer_pct" in params else params.get("sr_breakout", params)
-    sl_buffer = sp.get("stop_loss_buffer_pct", 0.005)
+    sl_buffer = sp.get("stop_loss_buffer_pct", 0.015)
     min_rr = sp.get("min_risk_reward", 2.0)
 
     entry = df.iloc[idx]["close"]

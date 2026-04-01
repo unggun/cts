@@ -120,7 +120,7 @@ def calculate_macd_levels(df: pd.DataFrame, idx: int,
         params = {}
 
     cfg = params if "sl_atr_multiplier" in params else params.get("macd", params)
-    sl_atr_mult = cfg.get("sl_atr_multiplier", 1.5)
+    sl_atr_mult = cfg.get("sl_atr_multiplier", 3.5)
     min_rr = cfg.get("min_risk_reward", 2.0)
 
     close = df.iloc[idx]["close"]

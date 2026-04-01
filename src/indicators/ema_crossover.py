@@ -195,10 +195,10 @@ def calculate_ema_levels(df: pd.DataFrame, idx: int, params: dict = None) -> dic
     Target: based on risk-reward ratio
     """
     if params is None:
-        params = {"sl_atr_multiplier": 1.5, "min_risk_reward": 2.0}
+        params = {"sl_atr_multiplier": 3.5, "min_risk_reward": 2.0}
 
     ec = params if "sl_atr_multiplier" in params else params.get("ema_crossover", params)
-    sl_mult = ec.get("sl_atr_multiplier", 1.5)
+    sl_mult = ec.get("sl_atr_multiplier", 3.5)
     min_rr = ec.get("min_risk_reward", 2.0)
 
     from src.indicators.features import _atr

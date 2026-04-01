@@ -152,6 +152,13 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
                 print(f"    - {f}")
             print("  Parameter updates will be blocked this cycle.")
 
+    # ── Monte Carlo gate ──
+    mc_fragile = (sim_results and sim_results.get("verdict") == "FRAGILE")
+    if mc_fragile and passed:
+        print("\n  ⚠️ Monte Carlo verdict is FRAGILE — parameter updates will be blocked.")
+        print("    (Filter rules will still be saved.)")
+        passed = False
+
     # ── Step 5: Claude review ──
     print(f"\n[5/6] Running Claude AI review...")
     if dry_run:
@@ -269,6 +276,10 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
             lines.append(f"\nConfidence: {conf_emoji} {conf}")
             if conf == "low":
                 lines.append("⚠️ _Parameter update SKIPPED (low confidence)_")
+
+        # Monte Carlo FRAGILE gate
+        if sim_results and sim_results.get("verdict") == "FRAGILE":
+            lines.append("🛑 _Parameter update BLOCKED (Monte Carlo: FRAGILE)_")
 
         # Parameter changes diff
         param_diff = format_param_diff(strategy)

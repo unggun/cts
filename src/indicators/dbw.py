@@ -115,10 +115,10 @@ def calculate_dbw_levels(df: pd.DataFrame, idx: int,
     Target = neckline + (neckline - bottom), i.e. pattern height projected up.
     """
     if params is None:
-        params = {"stop_loss_pct": 0.03, "min_risk_reward": 2.0}
+        params = {"stop_loss_pct": 0.07, "min_risk_reward": 2.0}
 
     dbw = params if "stop_loss_pct" in params else params.get("dbw", params)
-    stop_loss_pct = dbw.get("stop_loss_pct", 0.03)
+    stop_loss_pct = dbw.get("stop_loss_pct", 0.07)
 
     entry = df.iloc[idx]["close"]
     neckline = df.iloc[idx]["dbw_neckline"]

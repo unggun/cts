@@ -123,10 +123,10 @@ def calculate_trade_levels(df: pd.DataFrame, idx: int,
         dict with entry, stop_loss, target, risk_reward, is_ath
     """
     if params is None:
-        params = {"stop_loss_pct": 0.03, "min_risk_reward": 2.0}
+        params = {"stop_loss_pct": 0.07, "min_risk_reward": 2.0}
 
     darvas = params if "stop_loss_pct" in params else params.get("darvas", params)
-    stop_loss_pct = darvas.get("stop_loss_pct", 0.03)
+    stop_loss_pct = darvas.get("stop_loss_pct", 0.07)
     min_rr = darvas.get("min_risk_reward", 2.0)
 
     entry = df.iloc[idx]["close"]

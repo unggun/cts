@@ -125,7 +125,7 @@ def calculate_cvd_levels(df: pd.DataFrame, idx: int,
         params = {}
 
     cfg = params if "sl_atr_multiplier" in params else params.get("cvd", params)
-    sl_atr_mult = cfg.get("sl_atr_multiplier", 2.0)
+    sl_atr_mult = cfg.get("sl_atr_multiplier", 4.0)
     min_rr = cfg.get("min_risk_reward", 2.0)
     lookback = cfg.get("lookback", 14)
 
