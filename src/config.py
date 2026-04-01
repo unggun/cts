@@ -21,6 +21,16 @@ def load_config(path: str = None) -> dict:
     with open(path, "r") as f:
         _config = yaml.safe_load(f)
 
+    # Strategy aliases — some strategies share config under a different name
+    strategy_aliases = {
+        "ma_crossover": "ema_crossover",
+        "sr_breakout": "support_resistance",
+    }
+    strategy_cfg = _config.get("strategy", {})
+    for alias, canonical in strategy_aliases.items():
+        if alias not in strategy_cfg and canonical in strategy_cfg:
+            strategy_cfg[alias] = strategy_cfg[canonical]
+
     # Allow env var overrides for secrets
     if os.environ.get("TOKOCRYPTO_API_KEY"):
         _config["exchange"]["api_key"] = os.environ["TOKOCRYPTO_API_KEY"]
