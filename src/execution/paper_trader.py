@@ -50,6 +50,9 @@ class PaperTrader:
         self.capital = self.config.get("simulation", {}).get("initial_capital", 10_000_000)
         self.initial_capital = self.capital
 
+        # Restore persisted positions from DB
+        self._restore_positions()
+
         # Graceful shutdown
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
@@ -217,10 +220,34 @@ class PaperTrader:
             "features": features,
         }
 
+        # Persist to DB
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO trade_journal
+            (mode, pair, strategy, direction, entry_time, entry_price,
+             stop_loss, take_profit, position_size, features_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "paper", pair, self.strategy, "long",
+            self.positions[pair]["entry_time"], levels["entry"],
+            levels["stop_loss"], levels.get("target"), position_size,
+            json.dumps(features)
+        ))
+        conn.commit()
+
         target_str = f"{levels['target']:,.0f}" if levels.get("target") else "ATH trail"
         print(f"  📈 OPENED {pair} @ {levels['entry']:,.0f} | "
               f"SL: {levels['stop_loss']:,.0f} | Target: {target_str} | "
               f"Size: {position_size:.6f}")
+
+        self._notify(
+            f"📈 *PAPER BUY {pair}*\n"
+            f"Strategy: {self.strategy}\n"
+            f"Entry: {levels['entry']:,.0f}\n"
+            f"Stop loss: {levels['stop_loss']:,.0f}\n"
+            f"Target: {target_str}\n"
+            f"Size: {position_size:.6f}"
+        )
 
     def _close_position(self, conn, pair: str, exit_price: float, reason: str):
         """Close a paper trading position and journal it."""
@@ -236,23 +263,72 @@ class PaperTrader:
               f"PnL: {pnl_pct:+.2%} ({pnl_absolute:+,.0f} IDR) | "
               f"Reason: {reason}")
 
-        # Save to journal
+        # Update the open journal entry with exit info
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO trade_journal
-            (mode, pair, strategy, direction, entry_time, entry_price,
-             exit_time, exit_price, stop_loss, take_profit, position_size,
-             pnl_pct, pnl_absolute, exit_reason, features_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            UPDATE trade_journal SET
+                exit_time=?, exit_price=?, exit_reason=?,
+                pnl_pct=?, pnl_absolute=?
+            WHERE mode='paper' AND pair=? AND strategy=?
+                AND exit_time IS NULL
+            ORDER BY created_at DESC LIMIT 1
         """, (
-            "paper", pair, self.strategy, "long",
-            pos["entry_time"], pos["entry_price"],
-            datetime.now().isoformat(), exit_price,
-            pos["stop_loss"], pos.get("target"),
-            pos["position_size"], pnl_pct, pnl_absolute,
-            reason, json.dumps(pos.get("features", {}))
+            datetime.now().isoformat(), exit_price, reason,
+            pnl_pct, pnl_absolute, pair, self.strategy
         ))
         conn.commit()
+
+        self._notify(
+            f"{emoji} *PAPER SELL {pair}* ({reason})\n"
+            f"Strategy: {self.strategy}\n"
+            f"Exit: {exit_price:,.0f}\n"
+            f"PnL: {pnl_pct:+.2%} ({pnl_absolute:+,.0f} IDR)"
+        )
+
+    def _restore_positions(self):
+        """Restore open positions from DB on startup."""
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT pair, entry_time, entry_price, stop_loss, take_profit,
+                   position_size, features_json
+            FROM trade_journal
+            WHERE mode='paper' AND strategy=? AND exit_time IS NULL
+        """, (self.strategy,))
+        rows = cur.fetchall()
+        for row in rows:
+            self.positions[row["pair"]] = {
+                "entry_time": row["entry_time"],
+                "entry_price": row["entry_price"],
+                "stop_loss": row["stop_loss"],
+                "target": row["take_profit"],
+                "position_size": row["position_size"],
+                "is_ath": False,
+                "features": json.loads(row["features_json"] or "{}"),
+            }
+        conn.close()
+        if self.positions:
+            print(f"  Restored {len(self.positions)} open positions: "
+                  f"{', '.join(self.positions.keys())}")
+
+    def _notify(self, message: str):
+        """Send Telegram notification."""
+        tg = self.config.get("notifications", {}).get("telegram", {})
+        if not tg.get("enabled"):
+            return
+        token = tg.get("bot_token", "")
+        chat_id = tg.get("chat_id", "")
+        if not token or not chat_id or "YOUR" in token:
+            return
+        try:
+            import requests
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     def _calculate_equity(self, pairs: list) -> float:
         """Calculate total equity including unrealized P&L."""

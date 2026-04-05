@@ -71,6 +71,9 @@ class LiveTrader:
         self.daily_pnl = 0.0
         self.trade_count_today = 0
 
+        # Restore persisted positions from DB
+        self._restore_positions()
+
         # Kill switch file path
         self.kill_switch = Path(__file__).parent.parent.parent / "STOP_TRADING"
 
@@ -478,6 +481,32 @@ class LiveTrader:
             pnl_pct, pnl_abs, pair, self.strategy
         ))
         conn.commit()
+
+    def _restore_positions(self):
+        """Restore open positions from DB on startup."""
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT pair, entry_time, entry_price, stop_loss, take_profit,
+                   position_size, features_json
+            FROM trade_journal
+            WHERE mode='live' AND strategy=? AND exit_time IS NULL
+        """, (self.strategy,))
+        rows = cur.fetchall()
+        for row in rows:
+            self.positions[row["pair"]] = {
+                "entry_time": row["entry_time"],
+                "entry_price": row["entry_price"],
+                "stop_loss": row["stop_loss"],
+                "target": row["take_profit"],
+                "position_size": row["position_size"],
+                "is_ath": False,
+                "features": json.loads(row["features_json"] or "{}"),
+            }
+        conn.close()
+        if self.positions:
+            print(f"  Restored {len(self.positions)} open positions: "
+                  f"{', '.join(self.positions.keys())}")
 
     def _notify(self, message: str):
         """Send Telegram notification."""

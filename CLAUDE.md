@@ -35,6 +35,19 @@ python3 -m src.run_learning_cycle --strategy darvas --dry-run
 # Paper trading
 python3 -m src.execution.paper_trader --strategy darvas
 
+# Live trading (requires sandbox=false and API keys)
+python3 -m src.execution.live_trader --strategy darvas --preflight
+python3 -m src.execution.live_trader --strategy darvas
+
+# Query open positions (paper + live)
+python3 -m src.execution.positions
+python3 -m src.execution.positions --mode paper
+python3 -m src.execution.positions --strategy rsi_vwap
+python3 -m src.execution.positions --json
+
+# Telegram bot (listens for /positions, /equity, /help commands)
+python3 -m src.execution.telegram_bot
+
 # Run all strategies in one cycle (with combined Telegram summary)
 python3 -m src.run_learning_cycle --all-strategies --dry-run
 
@@ -75,6 +88,52 @@ Claude returns a confidence level (low/medium/high). When confidence is "low", p
 
 Seven tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_parameters` (versioned), `learning_sessions` (Claude review history), `simulation_results`, `trade_journal` (paper/live trades), `filter_rules` (active trade filters). Schema is in `src/data/database.py:init_db()` and `src/learning/filter_rules.py:init_filter_rules_table()`.
 
+### Paper & Live Trading
+
+`src/execution/paper_trader.py` connects to Tokocrypto for real-time prices but executes trades in the local database. `src/execution/live_trader.py` places real orders. Both traders:
+- Persist open positions to `trade_journal` (with `exit_time IS NULL` for open trades)
+- Restore positions from DB on startup (survives restarts)
+- Send Telegram notifications on every buy/sell
+- Use learned parameters and filter rules from the auto-learning loop
+
+The learning system only uses `backtest_trades` for analysis, not paper/live trades. Paper/live trading validates the strategy in real-time conditions.
+
+### Position Queries
+
+`src/execution/positions.py` provides a CLI to query open positions from `trade_journal`. Open positions are identified by `exit_time IS NULL`.
+
+### Telegram Bot
+
+`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/help`. Run as a systemd service on the VPS.
+
 ### Feature Extraction
 
 `src/indicators/features.py` extracts 40+ features per trade signal (volume ratios, ATR, RSI, moving averages, etc.) stored as JSON in `backtest_trades.features_json`. These features drive the winner/loser analysis in `src/learning/analyzer.py`.
+
+## VPS Deployment
+
+The system runs on a VPS with systemd services:
+
+```bash
+# Paper traders (one per strategy)
+sudo systemctl start cts-paper-trader@darvas
+sudo systemctl start cts-paper-trader@rsi_vwap
+
+# Weekly auto-learning cycle
+sudo systemctl start cts-learning.timer
+
+# Telegram bot (for /positions, /equity queries)
+sudo systemctl start cts-telegram-bot
+
+# Check status
+sudo systemctl status cts-paper-trader@rsi_vwap
+sudo systemctl status cts-telegram-bot
+journalctl -u cts-learning.service --since today --no-pager
+```
+
+### Systemd service files
+
+- `/etc/systemd/system/cts-paper-trader@.service` — template for paper traders
+- `/etc/systemd/system/cts-learning.service` — auto-learning cycle
+- `/etc/systemd/system/cts-learning.timer` — weekly trigger (Sundays at midnight)
+- `/etc/systemd/system/cts-telegram-bot.service` — Telegram bot
