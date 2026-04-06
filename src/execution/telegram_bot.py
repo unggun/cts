@@ -122,16 +122,17 @@ class TelegramBot:
             try:
                 response = handler(args)
             except Exception as e:
-                response = f"⚠️ Error: {e}"
+                print(f"Command error ({command}): {e}")
+                response = f"Error processing {command}: {e}"
         else:
             response = f"Unknown command: {command}\nType /help for available commands."
 
         self._send(chat_id, response)
 
     def _send(self, chat_id: str, text: str):
-        """Send a message."""
+        """Send a message. Falls back to plain text if Markdown fails."""
         try:
-            req.post(
+            resp = req.post(
                 f"{self.api_base}/sendMessage",
                 json={
                     "chat_id": chat_id,
@@ -140,6 +141,13 @@ class TelegramBot:
                 },
                 timeout=10,
             )
+            if not resp.json().get("ok"):
+                # Retry without Markdown
+                req.post(
+                    f"{self.api_base}/sendMessage",
+                    json={"chat_id": chat_id, "text": text},
+                    timeout=10,
+                )
         except Exception as e:
             print(f"Send error: {e}")
 
