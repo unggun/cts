@@ -103,8 +103,23 @@ def reset_filter_rules(strategy: str):
     conn.close()
 
 
+def reset_parameters(strategy: str):
+    """Delete all saved parameter versions for a strategy so it gets first-run bypass."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM strategy_parameters WHERE strategy = ?", (strategy,))
+    count = cur.rowcount
+    conn.commit()
+    conn.close()
+    if count > 0:
+        print(f"  Deleted {count} parameter version(s) for {strategy}")
+    else:
+        print(f"  No saved parameters for {strategy}")
+
+
 def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
-                   dry_run: bool = False, do_reset_filters: bool = False):
+                   dry_run: bool = False, do_reset_filters: bool = False,
+                   do_reset_params: bool = False):
     """Run the complete auto-learning cycle."""
     config = load_config()
     init_db()
@@ -113,6 +128,10 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     if do_reset_filters:
         print(f"\n[RESET] Clearing all filter rules for {strategy}...")
         reset_filter_rules(strategy)
+
+    if do_reset_params:
+        print(f"[RESET] Clearing saved parameters for {strategy}...")
+        reset_parameters(strategy)
 
     print("=" * 70)
     print(f"AUTO-LEARNING CYCLE — {datetime.now().isoformat()}")
@@ -263,7 +282,8 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
 
 
 def run_all_strategies(skip_download: bool = False, dry_run: bool = False,
-                       do_reset_filters: bool = False):
+                       do_reset_filters: bool = False,
+                       do_reset_params: bool = False):
     """Run learning cycle for all strategies and send a combined summary."""
     config = load_config()
     strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick",
@@ -283,7 +303,8 @@ def run_all_strategies(skip_download: bool = False, dry_run: bool = False,
         print(f"{'#' * 70}")
         try:
             run_full_cycle(strategy=strategy, skip_download=True, dry_run=dry_run,
-                           do_reset_filters=do_reset_filters)
+                           do_reset_filters=do_reset_filters,
+                           do_reset_params=do_reset_params)
         except Exception as e:
             print(f"  Error running {strategy}: {e}")
         finally:
@@ -418,6 +439,8 @@ if __name__ == "__main__":
                         help="Run without calling Claude API")
     parser.add_argument("--reset-filters", action="store_true",
                         help="Deactivate all filter rules before running (useful for stuck strategies)")
+    parser.add_argument("--reset-params", action="store_true",
+                        help="Delete saved parameters so strategy gets first-run bypass")
     args = parser.parse_args()
 
     if args.all_strategies:
@@ -425,6 +448,7 @@ if __name__ == "__main__":
             skip_download=args.skip_download,
             dry_run=args.dry_run,
             do_reset_filters=args.reset_filters,
+            do_reset_params=args.reset_params,
         )
     else:
         run_full_cycle(
@@ -432,4 +456,5 @@ if __name__ == "__main__":
             skip_download=args.skip_download,
             dry_run=args.dry_run,
             do_reset_filters=args.reset_filters,
+            do_reset_params=args.reset_params,
         )
