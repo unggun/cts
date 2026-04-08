@@ -102,6 +102,16 @@ strategy:
     min_risk_reward: 1.5
     trailing_atr_multiplier: 3.0
 
+  mean_reversion:
+    window: 20                   # Rolling mean/std lookback period
+    zscore_threshold: -1.5       # Buy when z-score below this (price far below mean)
+    rsi_period: 14
+    rsi_threshold: 35            # RSI must be below this (momentum exhaustion)
+    volume_confirmation: true
+    sl_atr_multiplier: 7.0
+    min_risk_reward: 1.2
+    trailing_atr_multiplier: 3.0
+
   macd:
     fast_period: 3
     slow_period: 15
