@@ -16,6 +16,7 @@ from src.indicators.rsi_vwap import detect_rsi_vwap, calculate_rsi_vwap_levels
 from src.indicators.cvd import detect_cvd_divergence, calculate_cvd_levels
 from src.indicators.macd import detect_macd, calculate_macd_levels
 from src.indicators.mean_reversion import detect_mean_reversion, calculate_mean_reversion_levels
+from src.indicators.bb_squeeze import detect_bb_squeeze, calculate_bb_squeeze_levels
 from src.indicators.features import extract_features
 from src.data.database import get_connection, save_backtest_trades, load_ohlcv
 from src.learning.filter_rules import load_active_filters, apply_filters
@@ -33,6 +34,7 @@ STRATEGY_REGISTRY = {
     "cvd": (detect_cvd_divergence, "cvd_signal", calculate_cvd_levels),
     "macd": (detect_macd, "macd_signal", calculate_macd_levels),
     "mean_reversion": (detect_mean_reversion, "mr_signal", calculate_mean_reversion_levels),
+    "bb_squeeze": (detect_bb_squeeze, "bbs_signal", calculate_bb_squeeze_levels),
 }
 
 

@@ -97,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--strategy", required=True,
                         choices=["darvas", "dbw", "candlestick", "sr_breakout", "support_resistance",
                                  "ma_crossover", "ema_crossover", "rsi_vwap", "cvd", "macd",
-                                 "mean_reversion"],
+                                 "mean_reversion", "bb_squeeze"],
                         help="Strategy to backtest")
     parser.add_argument("--pair", required=True, help="Trading pair (e.g. BTC/IDR)")
     parser.add_argument("--timeframe", default="1h", help="Candle timeframe")

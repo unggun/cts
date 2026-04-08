@@ -287,7 +287,7 @@ def run_all_strategies(skip_download: bool = False, dry_run: bool = False,
     """Run learning cycle for all strategies and send a combined summary."""
     config = load_config()
     strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick",
-                  "rsi_vwap", "cvd", "macd", "mean_reversion"]
+                  "rsi_vwap", "cvd", "macd", "mean_reversion", "bb_squeeze"]
     # Download once
     if not skip_download:
         init_db()
@@ -436,7 +436,7 @@ if __name__ == "__main__":
     parser.add_argument("--strategy", default="darvas",
                         choices=["darvas", "dbw", "candlestick", "sr_breakout",
                                  "ma_crossover", "rsi_vwap", "cvd", "macd",
-                                 "mean_reversion"])
+                                 "mean_reversion", "bb_squeeze"])
     parser.add_argument("--all-strategies", action="store_true",
                         help="Run cycle for all strategies with combined summary")
     parser.add_argument("--skip-download", action="store_true",
