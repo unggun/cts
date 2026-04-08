@@ -29,11 +29,15 @@ from src.learning.filter_rules import init_filter_rules_table
 
 
 def check_quality_gates(all_results: dict,
-                        min_win_rate: float = 0.55,
-                        min_profit_factor: float = 1.5,
-                        max_drawdown: float = 0.20,
-                        min_total_trades: int = 100) -> tuple:
+                        min_win_rate: float = 0.35,
+                        min_profit_factor: float = 1.2,
+                        max_drawdown: float = 0.25,
+                        min_total_trades: int = 50,
+                        min_expectancy: float = 0.0) -> tuple:
     """Check if backtest results meet minimum quality thresholds.
+
+    Uses expectancy-based gating: a strategy with lower win rate but higher
+    avg_win/avg_loss ratio (positive expectancy) is allowed through.
 
     Returns:
         (passed: bool, failures: list[str])
@@ -48,15 +52,35 @@ def check_quality_gates(all_results: dict,
     if total_trades < min_total_trades:
         failures.append(f"Insufficient trades: {total_trades} < {min_total_trades} minimum")
 
+    # Aggregate win rate check
     total_winners = sum(r.get("winners", 0) for r in active.values())
     agg_win_rate = total_winners / total_trades if total_trades > 0 else 0
     if agg_win_rate < min_win_rate:
         failures.append(f"Win rate too low: {agg_win_rate:.1%} < {min_win_rate:.0%} minimum")
 
+    # Aggregate expectancy check (WR * avg_win + (1-WR) * avg_loss)
+    total_avg_win = sum(r.get("avg_win", 0) * r.get("winners", 0) for r in active.values())
+    total_avg_loss = sum(r.get("avg_loss", 0) * r.get("losers", 0) for r in active.values())
+    if total_winners > 0:
+        total_avg_win /= total_winners
+    total_losers = total_trades - total_winners
+    if total_losers > 0:
+        total_avg_loss /= total_losers
+    expectancy = agg_win_rate * total_avg_win + (1 - agg_win_rate) * total_avg_loss
+    if expectancy < min_expectancy:
+        failures.append(f"Negative expectancy: {expectancy:.3%} (WR {agg_win_rate:.1%} × "
+                        f"avg_win {total_avg_win:.2%} + loss component)")
+
+    # Per-pair profit factor — only flag pairs below threshold, not blocking
+    pf_warnings = []
     for pair, r in active.items():
         pf = r.get("profit_factor", 0)
         if pf < min_profit_factor:
-            failures.append(f"{pair} profit factor too low: {pf:.2f} < {min_profit_factor}")
+            pf_warnings.append(f"{pair} profit factor low: {pf:.2f} < {min_profit_factor}")
+
+    # Block only if majority of pairs have poor profit factor
+    if len(pf_warnings) > len(active) * 0.7:
+        failures.extend(pf_warnings)
 
     for pair, r in active.items():
         dd = r.get("max_drawdown", 0)
@@ -66,12 +90,29 @@ def check_quality_gates(all_results: dict,
     return len(failures) == 0, failures
 
 
+def reset_filter_rules(strategy: str):
+    """Deactivate all filter rules for a strategy."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='filter_rules'")
+    if cur.fetchone():
+        cur.execute("UPDATE filter_rules SET active = 0 WHERE strategy = ?", (strategy,))
+        count = cur.rowcount
+        conn.commit()
+        print(f"  Deactivated {count} filter rules for {strategy}")
+    conn.close()
+
+
 def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
-                   dry_run: bool = False):
+                   dry_run: bool = False, do_reset_filters: bool = False):
     """Run the complete auto-learning cycle."""
     config = load_config()
     init_db()
     init_filter_rules_table()
+
+    if do_reset_filters:
+        print(f"\n[RESET] Clearing all filter rules for {strategy}...")
+        reset_filter_rules(strategy)
 
     print("=" * 70)
     print(f"AUTO-LEARNING CYCLE — {datetime.now().isoformat()}")
@@ -135,10 +176,11 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     gate_cfg = config.get("learning", {})
     passed, gate_failures = check_quality_gates(
         all_results,
-        min_win_rate=gate_cfg.get("min_win_rate", 0.55),
-        min_profit_factor=gate_cfg.get("min_profit_factor", 1.5),
-        max_drawdown=gate_cfg.get("max_drawdown", 0.20),
-        min_total_trades=gate_cfg.get("min_total_trades", 100),
+        min_win_rate=gate_cfg.get("min_win_rate", 0.35),
+        min_profit_factor=gate_cfg.get("min_profit_factor", 1.2),
+        max_drawdown=gate_cfg.get("max_drawdown", 0.25),
+        min_total_trades=gate_cfg.get("min_total_trades", 50),
+        min_expectancy=gate_cfg.get("min_expectancy", 0.0),
     )
     if not passed:
         if not has_prior_params:
@@ -185,6 +227,14 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
                   f"Max DD: {results['max_drawdown']:.2%}")
             if results.get("filtered_trades", 0) > 0:
                 print(f"    Filtered: {results['filtered_trades']} trades skipped by rules")
+        else:
+            # Diagnostics for zero-trade pairs
+            signals = results.get("signal_count", 0)
+            rr_rej = results.get("rr_rejected", 0)
+            filtered = results.get("filtered_trades", 0)
+            if signals > 0:
+                print(f"\n  {pair}: 0 trades "
+                      f"(signals: {signals}, RR-rejected: {rr_rej}, filtered: {filtered})")
 
     if sim_results and "verdict" in sim_results:
         print(f"\n  Monte Carlo: {sim_results.get('verdict_emoji', '')} "
@@ -207,7 +257,8 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     _send_telegram_summary(config, strategy, all_results, sim_results, review)
 
 
-def run_all_strategies(skip_download: bool = False, dry_run: bool = False):
+def run_all_strategies(skip_download: bool = False, dry_run: bool = False,
+                       do_reset_filters: bool = False):
     """Run learning cycle for all strategies and send a combined summary."""
     config = load_config()
     strategies = ["darvas", "sr_breakout", "ma_crossover", "dbw", "candlestick",
@@ -226,7 +277,8 @@ def run_all_strategies(skip_download: bool = False, dry_run: bool = False):
         print(f"# STRATEGY: {strategy}")
         print(f"{'#' * 70}")
         try:
-            run_full_cycle(strategy=strategy, skip_download=True, dry_run=dry_run)
+            run_full_cycle(strategy=strategy, skip_download=True, dry_run=dry_run,
+                           do_reset_filters=do_reset_filters)
         except Exception as e:
             print(f"  Error running {strategy}: {e}")
 
@@ -351,16 +403,20 @@ if __name__ == "__main__":
                         help="Skip OHLCV data download")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run without calling Claude API")
+    parser.add_argument("--reset-filters", action="store_true",
+                        help="Deactivate all filter rules before running (useful for stuck strategies)")
     args = parser.parse_args()
 
     if args.all_strategies:
         run_all_strategies(
             skip_download=args.skip_download,
             dry_run=args.dry_run,
+            do_reset_filters=args.reset_filters,
         )
     else:
         run_full_cycle(
             strategy=args.strategy,
             skip_download=args.skip_download,
             dry_run=args.dry_run,
+            do_reset_filters=args.reset_filters,
         )

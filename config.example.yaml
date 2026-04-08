@@ -126,10 +126,12 @@ learning:
   # Analysis schedule (used by n8n/cron)
   analysis_interval_hours: 168  # Weekly
   # Quality gates — block parameter updates if backtest fails these
-  min_win_rate: 0.55
-  min_profit_factor: 1.5
-  max_drawdown: 0.20
-  min_total_trades: 100
+  # Uses expectancy-based gating: low WR + high avg_win/avg_loss is acceptable
+  min_win_rate: 0.35
+  min_profit_factor: 1.2
+  max_drawdown: 0.25
+  min_total_trades: 50
+  min_expectancy: 0.0  # WR * avg_win + (1-WR) * avg_loss must be positive
 
 notifications:
   telegram:

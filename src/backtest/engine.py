@@ -46,6 +46,8 @@ class BacktestEngine:
         # Load active filter rules
         self.filters = load_active_filters(strategy)
         self.filtered_count = 0
+        self.signal_count = 0
+        self.rr_rejected_count = 0
 
         # State
         self.capital = initial_capital
@@ -88,12 +90,15 @@ class BacktestEngine:
 
             # ── Check entry conditions ──
             if self.position is None and df.iloc[i].get(signal_col) == "buy":
+                self.signal_count += 1
+
                 # Calculate trade levels using the registered function
                 levels = levels_fn(df, i, strategy_params)
 
                 # Check risk-reward
                 min_rr = strategy_params.get("min_risk_reward", 2.0)
                 if levels["risk_reward"] < min_rr and levels.get("target") is not None:
+                    self.rr_rejected_count += 1
                     continue
 
                 # Position sizing
@@ -219,6 +224,9 @@ class BacktestEngine:
                 "pair": pair,
                 "timeframe": timeframe,
                 "total_trades": 0,
+                "signal_count": self.signal_count,
+                "rr_rejected": self.rr_rejected_count,
+                "filtered_trades": self.filtered_count,
                 "message": "No trades generated",
             }
 
@@ -265,6 +273,8 @@ class BacktestEngine:
             "pair": pair,
             "timeframe": timeframe,
             "total_trades": len(self.trades),
+            "signal_count": self.signal_count,
+            "rr_rejected": self.rr_rejected_count,
             "filtered_trades": self.filtered_count,
             "winners": len(winners),
             "losers": len(losers),

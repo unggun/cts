@@ -61,7 +61,16 @@ def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
     print("=" * 60)
 
     if results.get("total_trades", 0) == 0:
+        signals = results.get("signal_count", 0)
+        rr_rej = results.get("rr_rejected", 0)
+        filtered = results.get("filtered_trades", 0)
         print("No trades generated.")
+        if signals > 0:
+            print(f"  Diagnostics: {signals} signals detected, "
+                  f"{rr_rej} rejected by risk-reward, "
+                  f"{filtered} rejected by filter rules")
+        else:
+            print(f"  Diagnostics: 0 signals — strategy pattern not found in data")
         return results
 
     print(f"Total trades:    {results['total_trades']}")

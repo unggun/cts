@@ -36,7 +36,6 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
             features = {}
         features["pnl_pct"] = row["pnl_pct"]
         features["is_winner"] = 1 if row["pnl_pct"] > 0 else 0
-        features["exit_reason"] = row["exit_reason"]
         features_list.append(features)
 
     if not features_list:
@@ -50,12 +49,13 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
 
     overall_win_rate = len(winners) / len(feat_df)
 
-    # Exit reason breakdown
+    # Exit reason breakdown (informational only — not used for filtering
+    # since exit_reason is determined after trade closes)
     exit_reason_stats = {}
-    if "exit_reason" in feat_df.columns:
-        for reason in feat_df["exit_reason"].dropna().unique():
-            reason_trades = feat_df[feat_df["exit_reason"] == reason]
-            reason_winners = reason_trades[reason_trades["is_winner"] == 1]
+    if "exit_reason" in trades_df.columns:
+        for reason in trades_df["exit_reason"].dropna().unique():
+            reason_trades = trades_df[trades_df["exit_reason"] == reason]
+            reason_winners = reason_trades[reason_trades["pnl_pct"] > 0]
             exit_reason_stats[reason] = {
                 "count": len(reason_trades),
                 "win_rate": len(reason_winners) / len(reason_trades) if len(reason_trades) > 0 else 0,
@@ -138,8 +138,9 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
                     "rationale": f"Winners avg {w_mean:.4f} vs losers {l_mean:.4f} ({direction} is better)",
                 })
 
-    # Analyze categorical features
-    for col in ["rsi_zone", "session", "exit_reason"]:
+    # Analyze categorical features (exclude exit_reason — it's a post-hoc
+    # label determined after trade closes, not available at entry time)
+    for col in ["rsi_zone", "session"]:
         if col not in feat_df.columns:
             continue
 
