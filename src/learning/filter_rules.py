@@ -15,9 +15,11 @@ import json
 from src.data.database import get_connection, init_db
 
 
-def init_filter_rules_table():
+def init_filter_rules_table(conn=None):
     """Create filter_rules table if it doesn't exist."""
-    conn = get_connection()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS filter_rules (
@@ -34,13 +36,17 @@ def init_filter_rules_table():
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
-    conn.commit()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
 
 
-def save_filter_rules(strategy: str, rules: list[dict], source: str = "analyzer"):
+def save_filter_rules(strategy: str, rules: list[dict], source: str = "analyzer",
+                      conn=None):
     """Save structured filter rules, deactivating old ones from the same source."""
-    conn = get_connection()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
     cur = conn.cursor()
 
     # Deactivate previous rules from same source for this strategy
@@ -67,8 +73,9 @@ def save_filter_rules(strategy: str, rules: list[dict], source: str = "analyzer"
         """, (strategy, feature, operator, threshold, rule_type,
               effect_size, source, rationale))
 
-    conn.commit()
-    conn.close()
+    if own_conn:
+        conn.commit()
+        conn.close()
 
 
 def load_active_filters(strategy: str) -> list[dict]:

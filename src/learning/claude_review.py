@@ -212,59 +212,63 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         except json.JSONDecodeError:
             review = {"raw_response": response_text}
 
-        # Save the learning session
+        # Save the learning session and results in a single connection
         conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO learning_sessions
-            (session_type, strategy, num_trades_analyzed, findings_json,
-             recommendations_json)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            "claude_review", strategy or "all",
-            findings.get("total_trades", 0),
-            json.dumps(findings),
-            json.dumps(review),
-        ))
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO learning_sessions
+                (session_type, strategy, num_trades_analyzed, findings_json,
+                 recommendations_json)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                "claude_review", strategy or "all",
+                findings.get("total_trades", 0),
+                json.dumps(findings),
+                json.dumps(review),
+            ))
 
-        # Confidence-gated parameter updates
-        confidence = review.get("confidence", "medium")
-        strat_name = strategy or "darvas"
+            # Confidence-gated parameter updates
+            confidence = review.get("confidence", "medium")
+            strat_name = strategy or "darvas"
 
-        if "updated_parameters" in review:
-            if block_param_updates:
-                print(f"⚠️ Skipping parameter update — quality gates failed")
-            elif confidence == "low":
-                print(f"⚠️ Skipping parameter update — Claude confidence is LOW")
-                print(f"  Reason: {review.get('notes', 'insufficient data or unclear patterns')}")
-            else:
-                version = save_parameters(
-                    conn, strat_name,
-                    review["updated_parameters"],
-                    source="claude_auto_review",
-                    performance={"win_rate": findings.get("overall_win_rate")},
-                    notes=json.dumps(review.get("key_insights", []))
-                )
-                print(f"Saved updated parameters as version {version} (confidence: {confidence})")
+            if "updated_parameters" in review:
+                if block_param_updates:
+                    print(f"⚠️ Skipping parameter update — quality gates failed")
+                elif confidence == "low":
+                    print(f"⚠️ Skipping parameter update — Claude confidence is LOW")
+                    print(f"  Reason: {review.get('notes', 'insufficient data or unclear patterns')}")
+                else:
+                    version = save_parameters(
+                        conn, strat_name,
+                        review["updated_parameters"],
+                        source="claude_auto_review",
+                        performance={"win_rate": findings.get("overall_win_rate")},
+                        notes=json.dumps(review.get("key_insights", []))
+                    )
+                    print(f"Saved updated parameters as version {version} (confidence: {confidence})")
 
-        # Save filter rules from Claude
-        if review.get("filter_rules"):
-            init_filter_rules_table()
-            structured_rules = parse_claude_filter_rules(review["filter_rules"])
-            if structured_rules:
-                save_filter_rules(strat_name, structured_rules, source="claude_review")
-                print(f"Saved {len(structured_rules)} filter rules from Claude review")
+            # Save filter rules from Claude (reuse connection)
+            if review.get("filter_rules"):
+                init_filter_rules_table(conn)
+                structured_rules = parse_claude_filter_rules(review["filter_rules"])
+                if structured_rules:
+                    save_filter_rules(strat_name, structured_rules,
+                                      source="claude_review", conn=conn)
+                    print(f"Saved {len(structured_rules)} filter rules from Claude review")
 
-        # Also save analyzer's suggested filters
-        if findings.get("suggested_filters"):
-            init_filter_rules_table()
-            analyzer_rules = parse_analyzer_filters(findings["suggested_filters"])
-            if analyzer_rules:
-                save_filter_rules(strat_name, analyzer_rules, source="analyzer")
-                print(f"Saved {len(analyzer_rules)} filter rules from analyzer")
+            # Also save analyzer's suggested filters (reuse connection)
+            if findings.get("suggested_filters"):
+                init_filter_rules_table(conn)
+                analyzer_rules = parse_analyzer_filters(findings["suggested_filters"])
+                if analyzer_rules:
+                    save_filter_rules(strat_name, analyzer_rules,
+                                      source="analyzer", conn=conn)
+                    print(f"Saved {len(analyzer_rules)} filter rules from analyzer")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
 
         return review
 

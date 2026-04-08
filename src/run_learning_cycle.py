@@ -281,6 +281,14 @@ def run_all_strategies(skip_download: bool = False, dry_run: bool = False,
                            do_reset_filters=do_reset_filters)
         except Exception as e:
             print(f"  Error running {strategy}: {e}")
+        finally:
+            # Force WAL checkpoint between strategies to release any lingering locks
+            try:
+                conn = get_connection()
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.close()
+            except Exception:
+                pass
 
     # Send combined summary
     _send_multi_strategy_telegram(config, strategies)
