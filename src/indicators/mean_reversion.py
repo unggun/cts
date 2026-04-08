@@ -151,7 +151,7 @@ def calculate_mean_reversion_levels(df: pd.DataFrame, idx: int,
 
     cfg = params if "sl_atr_multiplier" in params else params.get("mean_reversion", params)
     sl_atr_mult = cfg.get("sl_atr_multiplier", 7.0)
-    min_rr = cfg.get("min_risk_reward", 1.2)
+    min_rr = cfg.get("min_risk_reward", 1.0)
 
     close = df.iloc[idx]["close"]
     atr = df.iloc[idx].get("atr_14", close * 0.02)
@@ -159,19 +159,24 @@ def calculate_mean_reversion_levels(df: pd.DataFrame, idx: int,
         atr = close * 0.02
 
     rolling_mean = df.iloc[idx].get("rolling_mean", close)
+    rolling_std = df.iloc[idx].get("rolling_std", atr)
     if np.isnan(rolling_mean):
         rolling_mean = close
+    if np.isnan(rolling_std) or rolling_std <= 0:
+        rolling_std = atr
 
     entry = close
-    stop_loss = entry - (atr * sl_atr_mult)
-    risk = entry - stop_loss
 
-    # Target is the rolling mean (where we expect price to revert)
-    target = rolling_mean
+    # Stop: use tighter stop for mean reversion — these are counter-trend
+    # trades expecting a bounce, so a smaller stop is appropriate
+    stop_loss = entry - (atr * sl_atr_mult)
+
+    # Target: rolling mean + overshoot allowance (price often overshoots
+    # the mean on reversion). Target the mean plus 0.5 std devs above it.
+    target = rolling_mean + (rolling_std * 0.5)
     if target <= entry:
-        # If mean is below entry (shouldn't happen often with z-score < -1.5),
-        # fall back to risk-reward based target
-        target = entry + (risk * min_rr)
+        # Fallback if somehow target is below entry
+        target = entry + (atr * 2.0)
 
     risk_reward = (target - entry) / risk if risk > 0 else 0
 
