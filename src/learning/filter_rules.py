@@ -10,9 +10,7 @@ Each rule has:
   - rule_type: "skip" (avoid trade) or "prefer" (boost confidence)
   - source: "analyzer" or "claude_review"
 """
-import json
-
-from src.data.database import get_connection, init_db
+from src.data.database import get_connection
 
 
 def init_filter_rules_table(conn=None):

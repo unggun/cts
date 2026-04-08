@@ -133,6 +133,7 @@ class BacktestEngine:
                     "target": levels.get("target"),
                     "position_size": position_size,
                     "is_ath": levels.get("is_ath", False),
+                    "highest_high": levels["entry"],  # Track for trailing stop
                     "features": features,
                     "levels": levels,
                 }
@@ -168,16 +169,25 @@ class BacktestEngine:
             self._close_position(df, i, "target", exit_price=pos["target"])
             return
 
-        # ATH trailing stop: use 2x ATR as trailing stop
-        if pos.get("is_ath", False):
-            from src.indicators.features import _atr
-            atr = _atr(
-                df["high"].values[:i+1],
-                df["low"].values[:i+1],
-                df["close"].values[:i+1],
-                14
-            )
-            trailing_stop = high - (2 * atr)
+        # Trailing stop for ALL strategies — once price moves in our favor,
+        # trail the stop behind the highest high to lock in gains
+        if high > pos.get("highest_high", pos["entry_price"]):
+            pos["highest_high"] = high
+
+        from src.indicators.features import _atr
+        atr = _atr(
+            df["high"].values[:i+1],
+            df["low"].values[:i+1],
+            df["close"].values[:i+1],
+            14
+        )
+
+        strategy_params = self.params.get(self.strategy, self.params)
+        trail_mult = strategy_params.get("trailing_atr_multiplier", 3.0)
+
+        # Only activate trailing stop once trade has moved 1x ATR in our favor
+        if pos["highest_high"] > pos["entry_price"] + atr:
+            trailing_stop = pos["highest_high"] - (trail_mult * atr)
             if trailing_stop > pos["stop_loss"]:
                 pos["stop_loss"] = trailing_stop
 

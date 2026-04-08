@@ -197,9 +197,14 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     # ── Monte Carlo gate ──
     mc_fragile = (sim_results and sim_results.get("verdict") == "FRAGILE")
     if mc_fragile and passed:
-        print("\n  ⚠️ Monte Carlo verdict is FRAGILE — parameter updates will be blocked.")
-        print("    (Filter rules will still be saved.)")
-        passed = False
+        if not has_prior_params:
+            print("\n  ⚠️ Monte Carlo verdict is FRAGILE (but first run — allowing initial tuning).")
+            print("    Claude will save parameters so stops/filters can be improved.")
+            # Keep passed = True for first run
+        else:
+            print("\n  ⚠️ Monte Carlo verdict is FRAGILE — parameter updates will be blocked.")
+            print("    (Filter rules will still be saved.)")
+            passed = False
 
     # ── Step 5: Claude review ──
     print(f"\n[5/6] Running Claude AI review...")

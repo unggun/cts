@@ -213,10 +213,10 @@ def calculate_ema_levels(df: pd.DataFrame, idx: int, params: dict = None) -> dic
     slow_ema = df.iloc[idx].get("ema_slow", entry)
 
     if signal == "buy":
-        # Stop below slow EMA or ATR-based, whichever is tighter
-        sl_ema = slow_ema - (atr * 0.5)
+        # Stop below slow EMA or ATR-based, whichever gives more room
+        sl_ema = slow_ema - (atr * 1.0)
         sl_atr = entry - (atr * sl_mult)
-        stop_loss = max(sl_ema, sl_atr)  # Tighter of the two
+        stop_loss = min(sl_ema, sl_atr)  # Wider of the two
 
         risk = entry - stop_loss
         target = entry + (risk * min_rr)

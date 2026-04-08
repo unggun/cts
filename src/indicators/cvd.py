@@ -136,7 +136,7 @@ def calculate_cvd_levels(df: pd.DataFrame, idx: int,
 
     start = max(0, idx - lookback)
     recent_low = df.iloc[start:idx + 1]["low"].min()
-    stop_loss = min(recent_low - (atr * 0.5), close - (atr * sl_atr_mult))
+    stop_loss = min(recent_low - (atr * 1.0), close - (atr * sl_atr_mult))
 
     entry = close
     risk = entry - stop_loss

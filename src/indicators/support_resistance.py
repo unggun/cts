@@ -244,7 +244,8 @@ def calculate_sr_levels(df: pd.DataFrame, idx: int, params: dict = None) -> dict
             from src.indicators.features import _atr
             atr = _atr(df["high"].values[:idx+1], df["low"].values[:idx+1],
                        df["close"].values[:idx+1], 14)
-            stop_loss = entry - (1.5 * atr)
+            sl_mult = sr.get("sl_atr_multiplier", 6.0)
+            stop_loss = entry - (sl_mult * atr)
 
         risk = entry - stop_loss
         target = entry + (risk * min_rr)

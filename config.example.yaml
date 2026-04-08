@@ -38,22 +38,27 @@ strategy:
     # Volume confirmation threshold (ratio vs 20-period average)
     volume_ratio_min: 1.2
     # Stop loss: percentage below box bottom (crypto needs wider stops)
-    stop_loss_pct: 0.07
+    stop_loss_pct: 0.12
     # Risk-reward minimum to take a trade
-    min_risk_reward: 2.0
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
   dbw:
     # DBW-specific parameters
     lookback_period: 20
     breakout_threshold: 0.02
     volume_confirmation: true
+    stop_loss_pct: 0.12
+    min_risk_reward: 1.2
+    trailing_atr_multiplier: 3.0
 
   candlestick:
     require_trend_context: true
     volume_confirmation: true
     min_strength: "moderate"   # weak, moderate, strong
-    atr_sl_multiplier: 3.0
-    min_risk_reward: 2.0
+    atr_sl_multiplier: 6.0
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
   support_resistance:
     swing_lookback: 5
@@ -62,8 +67,9 @@ strategy:
     volume_confirmation: true
     breakout_threshold_pct: 0.002
     recalc_interval: 50
-    stop_buffer_pct: 0.015
-    min_risk_reward: 2.0
+    stop_buffer_pct: 0.03
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
   ema_crossover:
     fast_period: 8
@@ -74,8 +80,9 @@ strategy:
     require_alignment: false   # require all 3 EMAs aligned
     pullback_enabled: true     # detect pullback-to-EMA bounces
     pullback_tolerance_atr: 0.3
-    sl_atr_multiplier: 3.5
-    min_risk_reward: 2.0
+    sl_atr_multiplier: 6.0
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
   rsi_vwap:
     rsi_period: 14
@@ -83,23 +90,26 @@ strategy:
     exit_rsi: 50
     volume_confirmation: true
     volume_ratio_min: 1.0
-    sl_atr_multiplier: 4.0
-    min_risk_reward: 2.0
+    sl_atr_multiplier: 7.0
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
   cvd:
     lookback: 14
     divergence_bars: 10
     volume_confirmation: true
-    sl_atr_multiplier: 4.0
-    min_risk_reward: 2.0
+    sl_atr_multiplier: 7.0
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
   macd:
     fast_period: 3
     slow_period: 15
     signal_period: 3
     volume_confirmation: true
-    sl_atr_multiplier: 3.5
-    min_risk_reward: 2.0
+    sl_atr_multiplier: 6.0
+    min_risk_reward: 1.5
+    trailing_atr_multiplier: 3.0
 
 risk:
   # Maximum percentage of portfolio per trade
