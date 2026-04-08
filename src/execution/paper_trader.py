@@ -358,7 +358,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Paper trading")
     parser.add_argument("--strategy", default="darvas",
-                        choices=["darvas", "dbw", "candlestick", "sr_breakout", "ma_crossover", "rsi_vwap", "cvd", "macd"])
+                        choices=["darvas", "dbw", "candlestick", "sr_breakout", "ma_crossover",
+                                 "rsi_vwap", "cvd", "macd", "mean_reversion", "bb_squeeze"])
     args = parser.parse_args()
 
     trader = PaperTrader(strategy=args.strategy)
