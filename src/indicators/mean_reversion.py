@@ -150,8 +150,7 @@ def calculate_mean_reversion_levels(df: pd.DataFrame, idx: int,
         params = {}
 
     cfg = params if "sl_atr_multiplier" in params else params.get("mean_reversion", params)
-    sl_atr_mult = cfg.get("sl_atr_multiplier", 7.0)
-    min_rr = cfg.get("min_risk_reward", 1.0)
+    sl_atr_mult = cfg.get("sl_atr_multiplier", 4.0)
 
     close = df.iloc[idx]["close"]
     atr = df.iloc[idx].get("atr_14", close * 0.02)
@@ -170,6 +169,7 @@ def calculate_mean_reversion_levels(df: pd.DataFrame, idx: int,
     # Stop: use tighter stop for mean reversion — these are counter-trend
     # trades expecting a bounce, so a smaller stop is appropriate
     stop_loss = entry - (atr * sl_atr_mult)
+    risk = entry - stop_loss
 
     # Target: rolling mean + overshoot allowance (price often overshoots
     # the mean on reversion). Target the mean plus 0.5 std devs above it.
