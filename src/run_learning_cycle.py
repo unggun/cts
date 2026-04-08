@@ -363,9 +363,14 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
             if conf == "low":
                 lines.append("⚠️ _Parameter update SKIPPED (low confidence)_")
 
-        # Monte Carlo FRAGILE gate
+        # Monte Carlo FRAGILE gate — check if params were actually saved
+        # by looking for a parameter diff (which only exists if save happened)
+        param_diff_check = format_param_diff(strategy)
         if sim_results and sim_results.get("verdict") == "FRAGILE":
-            lines.append("🛑 _Parameter update BLOCKED (Monte Carlo: FRAGILE)_")
+            if param_diff_check:
+                lines.append("⚠️ _Monte Carlo: FRAGILE (first run — params saved for tuning)_")
+            else:
+                lines.append("🛑 _Parameter update BLOCKED (Monte Carlo: FRAGILE)_")
 
         # Parameter changes diff
         param_diff = format_param_diff(strategy)
