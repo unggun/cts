@@ -424,7 +424,8 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
         if isinstance(review, dict) and "key_insights" in review:
             lines.append("\n*Top Insight:*")
             if review["key_insights"]:
-                lines.append(f"_{review['key_insights'][0]}_")
+                insight = review["key_insights"][0].replace("_", "\\_")
+                lines.append(f"_{insight}_")
 
         # Confidence indicator
         if isinstance(review, dict) and "confidence" in review:
@@ -455,12 +456,25 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
 
         message = "\n".join(lines)
 
-        requests.post(
+        resp = requests.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
             json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
             timeout=10,
         )
-        print("  Telegram notification sent.")
+        if resp.ok:
+            print("  Telegram notification sent.")
+        else:
+            print(f"  Telegram API rejected message: {resp.status_code} {resp.text[:200]}")
+            # Retry without Markdown if parsing failed
+            resp2 = requests.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json={"chat_id": chat_id, "text": message},
+                timeout=10,
+            )
+            if resp2.ok:
+                print("  Sent plain-text fallback.")
+            else:
+                print(f"  Plain-text fallback also failed: {resp2.status_code}")
     except Exception as e:
         print(f"  Telegram notification failed: {e}")
 
