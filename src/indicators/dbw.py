@@ -112,13 +112,18 @@ def calculate_dbw_levels(df: pd.DataFrame, idx: int,
                          params: dict = None) -> dict:
     """Calculate trade levels for a DBW breakout.
 
-    Target = neckline + (neckline - bottom), i.e. pattern height projected up.
+    Stop is ATR-based just below the pattern bottom (volatility-aware).
+    Target uses a configurable multiplier on the pattern height for more
+    aggressive profit targets (default 1.5× height above neckline).
     """
-    if params is None:
-        params = {"stop_loss_pct": 0.07, "min_risk_reward": 2.0}
+    import numpy as np
 
-    dbw = params if "stop_loss_pct" in params else params.get("dbw", params)
-    stop_loss_pct = dbw.get("stop_loss_pct", 0.07)
+    if params is None:
+        params = {}
+
+    dbw = params if "sl_atr_multiplier" in params else params.get("dbw", params)
+    sl_atr_mult = dbw.get("sl_atr_multiplier", 1.5)
+    target_multiplier = dbw.get("target_multiplier", 1.5)
 
     entry = df.iloc[idx]["close"]
     neckline = df.iloc[idx]["dbw_neckline"]
@@ -126,9 +131,13 @@ def calculate_dbw_levels(df: pd.DataFrame, idx: int,
     bottom2_idx = int(df.iloc[idx]["dbw_bottom2_idx"])
     bottom_price = min(df.iloc[bottom1_idx]["low"], df.iloc[bottom2_idx]["low"])
 
+    atr = df.iloc[idx].get("atr_14", entry * 0.02)
+    if np.isnan(atr) or atr <= 0:
+        atr = entry * 0.02
+
     pattern_height = neckline - bottom_price
-    target = neckline + pattern_height
-    stop_loss = bottom_price * (1 - stop_loss_pct)
+    target = neckline + (pattern_height * target_multiplier)
+    stop_loss = bottom_price - (atr * sl_atr_mult)
     risk = entry - stop_loss
     risk_reward = (target - entry) / risk if risk > 0 else 0
 

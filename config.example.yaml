@@ -48,7 +48,8 @@ strategy:
     lookback_period: 20
     breakout_threshold: 0.02
     volume_confirmation: true
-    stop_loss_pct: 0.05
+    sl_atr_multiplier: 1.5
+    target_multiplier: 1.5
     min_risk_reward: 0.8
     trailing_atr_multiplier: 3.0
 
