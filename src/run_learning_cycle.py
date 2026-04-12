@@ -362,13 +362,23 @@ def _send_zero_trade_telegram(config: dict, strategy: str, results: dict):
             else:
                 lines.append(f"*{pair}*: 0 signals")
 
+        total_rr = sum(r.get("rr_rejected", 0) for r in results.values())
+        total_filtered = sum(r.get("filtered_trades", 0) for r in results.values())
+
         lines.append("")
-        if any_signals:
-            lines.append("_Signals fired but all were gated. "
-                         "Consider `--reset-filters` if rules are stuck._")
-        else:
+        if not any_signals:
             lines.append("_No signals fired at all — strategy pattern not "
                          "present in recent data._")
+        elif total_filtered > total_rr:
+            lines.append("_Signals fired but filter rules killed them all. "
+                         "Consider `--reset-filters` if rules are stuck._")
+        elif total_rr > 0 and total_filtered == 0:
+            lines.append("_All signals rejected by risk-reward check. "
+                         "The min\\_risk\\_reward or stop/target levels "
+                         "need tuning — `--reset-filters` won't help._")
+        else:
+            lines.append(f"_Rejected by RR: {total_rr}, by filters: "
+                         f"{total_filtered}. Check both thresholds._")
 
         message = "\n".join(lines)
         requests.post(

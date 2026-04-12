@@ -48,8 +48,8 @@ strategy:
     lookback_period: 20
     breakout_threshold: 0.02
     volume_confirmation: true
-    stop_loss_pct: 0.12
-    min_risk_reward: 1.2
+    stop_loss_pct: 0.05
+    min_risk_reward: 0.8
     trailing_atr_multiplier: 3.0
 
   candlestick:
@@ -108,8 +108,8 @@ strategy:
     rsi_period: 14
     rsi_threshold: 35            # RSI must be below this (momentum exhaustion)
     volume_confirmation: true
-    sl_atr_multiplier: 4.0       # Tighter stop for mean reversion (expecting bounce)
-    min_risk_reward: 1.0         # Lower RR — mean reversion is high-WR / small-move
+    sl_atr_multiplier: 2.0       # Tighter stop — 4.0 was too wide, killing RR ratio
+    min_risk_reward: 0.5         # Mean reversion has high WR, doesn't need high RR
     trailing_atr_multiplier: 2.0
 
   bb_squeeze:
