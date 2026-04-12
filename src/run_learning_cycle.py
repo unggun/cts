@@ -160,6 +160,10 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         results = run_backtest(strategy, pair, timeframe, config)
         all_results[pair] = results
 
+    # Collect this cycle's run_ids so downstream analysis only sees
+    # trades produced in this cycle (not the full backtest_trades history).
+    cycle_run_ids = [r["run_id"] for r in all_results.values() if r.get("run_id")]
+
     # Check if we have enough trades
     total_trades = sum(r.get("total_trades", 0) for r in all_results.values())
     min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
@@ -169,14 +173,15 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
               f"Consider adding more pairs or longer history.")
         if total_trades == 0:
             print("  Stopping cycle — no trades to analyze.")
+            _send_zero_trade_telegram(config, strategy, all_results)
             return
 
     # ── Step 3: Analyze patterns ──
     print(f"\n[3/6] Analyzing winner/loser patterns ({total_trades} trades)...")
-    findings = analyze_winners_vs_losers(strategy=strategy)
+    findings = analyze_winners_vs_losers(strategy=strategy, run_ids=cycle_run_ids)
     print_analysis(findings)
 
-    time_patterns = analyze_time_patterns(strategy=strategy)
+    time_patterns = analyze_time_patterns(strategy=strategy, run_ids=cycle_run_ids)
     if "by_day" in time_patterns:
         print("\n  Time patterns found:")
         for day, stats in time_patterns["by_day"].items():
@@ -184,7 +189,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
 
     # ── Step 4: Monte Carlo simulation ──
     print(f"\n[4/6] Running Monte Carlo simulation...")
-    sim_results = run_simulation(strategy=strategy)
+    sim_results = run_simulation(strategy=strategy, run_ids=cycle_run_ids)
 
     # ── Quality gates ──
     # Skip gates on first run (no saved parameters yet) — allow initial tuning
@@ -234,6 +239,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         sim_results=sim_results,
         dry_run=dry_run,
         block_param_updates=not passed,
+        run_ids=cycle_run_ids,
     )
 
     # ── Step 6: Summary ──
@@ -318,6 +324,61 @@ def run_all_strategies(skip_download: bool = False, dry_run: bool = False,
 
     # Send combined summary
     _send_multi_strategy_telegram(config, strategies)
+
+
+def _send_zero_trade_telegram(config: dict, strategy: str, results: dict):
+    """Notify when a strategy's cycle produced zero tradeable signals.
+
+    Without this, strategies that get fully gated by filter rules or
+    risk-reward checks silently skip notification and the user can't
+    tell them apart from strategies that didn't run at all.
+    """
+    tg_cfg = config.get("notifications", {}).get("telegram", {})
+    if not tg_cfg.get("enabled", False):
+        return
+
+    bot_token = tg_cfg.get("bot_token", "")
+    chat_id = tg_cfg.get("chat_id", "")
+    if not bot_token or not chat_id or "YOUR" in bot_token:
+        return
+
+    try:
+        import requests
+
+        lines = [f"⚠️ *Auto-Learning Cycle — No Trades*"]
+        lines.append(f"📊 Strategy: *{strategy.upper()}*\n")
+        lines.append("_Cycle ran but generated 0 tradeable signals._\n")
+
+        lines.append("*Per-pair diagnostics:*")
+        any_signals = False
+        for pair, r in results.items():
+            signals = r.get("signal_count", 0)
+            rr_rej = r.get("rr_rejected", 0)
+            filtered = r.get("filtered_trades", 0)
+            if signals > 0:
+                any_signals = True
+                lines.append(f"*{pair}*: {signals} signals, "
+                             f"{rr_rej} RR-rejected, {filtered} filter-rejected")
+            else:
+                lines.append(f"*{pair}*: 0 signals")
+
+        lines.append("")
+        if any_signals:
+            lines.append("_Signals fired but all were gated. "
+                         "Consider `--reset-filters` if rules are stuck._")
+        else:
+            lines.append("_No signals fired at all — strategy pattern not "
+                         "present in recent data._")
+
+        message = "\n".join(lines)
+        requests.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+        print("  Zero-trade Telegram notification sent.")
+    except Exception as e:
+        print(f"  Zero-trade Telegram notification failed: {e}")
 
 
 def _send_telegram_summary(config: dict, strategy: str, results: dict,

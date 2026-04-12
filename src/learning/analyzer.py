@@ -13,7 +13,8 @@ from src.data.database import get_connection, init_db, load_backtest_trades
 
 
 def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
-                               min_trades: int = 20) -> dict:
+                               min_trades: int = 20,
+                               run_ids: list = None) -> dict:
     """Analyze feature distributions of winners vs losers.
 
     Returns:
@@ -21,7 +22,8 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
     """
     init_db()
     conn = get_connection()
-    trades_df = load_backtest_trades(conn, run_id=run_id, strategy=strategy)
+    trades_df = load_backtest_trades(conn, run_id=run_id, strategy=strategy,
+                                     run_ids=run_ids)
     conn.close()
 
     if len(trades_df) < min_trades:
@@ -174,11 +176,13 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
     return findings
 
 
-def analyze_time_patterns(run_id: str = None, strategy: str = None) -> dict:
+def analyze_time_patterns(run_id: str = None, strategy: str = None,
+                          run_ids: list = None) -> dict:
     """Analyze win rates by day of week and hour."""
     init_db()
     conn = get_connection()
-    trades_df = load_backtest_trades(conn, run_id=run_id, strategy=strategy)
+    trades_df = load_backtest_trades(conn, run_id=run_id, strategy=strategy,
+                                     run_ids=run_ids)
     conn.close()
 
     if trades_df.empty:

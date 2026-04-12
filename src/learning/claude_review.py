@@ -138,7 +138,8 @@ Respond with valid JSON in the following structure:
 
 def run_claude_review(strategy: str = None, run_id: str = None,
                       sim_results: dict = None, dry_run: bool = False,
-                      block_param_updates: bool = False) -> dict:
+                      block_param_updates: bool = False,
+                      run_ids: list = None) -> dict:
     """Run a Claude-powered analysis of recent trading performance.
 
     Args:
@@ -147,6 +148,9 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         sim_results: Optional Monte Carlo results to include
         dry_run: If True, just build the prompt without calling API
         block_param_updates: If True, skip parameter updates regardless of confidence
+        run_ids: Restrict analysis to these run_ids (e.g. just the
+            current learning cycle's pair-level runs). Preferred over
+            ``run_id`` when a cycle produces multiple runs.
 
     Returns:
         dict with Claude's analysis and recommendations
@@ -157,11 +161,13 @@ def run_claude_review(strategy: str = None, run_id: str = None,
     model = learning_cfg.get("claude_model", "claude-sonnet-4-20250514")
 
     # Get findings
-    findings = analyze_winners_vs_losers(run_id=run_id, strategy=strategy)
+    findings = analyze_winners_vs_losers(run_id=run_id, strategy=strategy,
+                                         run_ids=run_ids)
     if "error" in findings:
         return findings
 
-    time_patterns = analyze_time_patterns(run_id=run_id, strategy=strategy)
+    time_patterns = analyze_time_patterns(run_id=run_id, strategy=strategy,
+                                          run_ids=run_ids)
 
     # Get current parameters
     conn = get_connection()

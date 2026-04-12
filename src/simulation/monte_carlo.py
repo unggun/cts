@@ -139,14 +139,16 @@ class MonteCarloSimulator:
         }
 
 
-def run_simulation(run_id: str = None, strategy: str = None) -> dict:
+def run_simulation(run_id: str = None, strategy: str = None,
+                   run_ids: list = None) -> dict:
     """Run Monte Carlo simulation on backtest results from DB."""
     config = load_config()
     sim_cfg = config.get("simulation", {})
 
     init_db()
     conn = get_connection()
-    trades_df = load_backtest_trades(conn, run_id=run_id, strategy=strategy)
+    trades_df = load_backtest_trades(conn, run_id=run_id, strategy=strategy,
+                                     run_ids=run_ids)
     conn.close()
 
     if trades_df.empty:

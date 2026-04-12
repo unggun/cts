@@ -215,12 +215,20 @@ def save_backtest_trades(conn: sqlite3.Connection, trades: list[dict]):
 
 
 def load_backtest_trades(conn: sqlite3.Connection, run_id: str = None,
-                         strategy: str = None):
-    """Load backtest trades as DataFrame."""
+                         strategy: str = None, run_ids: list = None):
+    """Load backtest trades as DataFrame.
+
+    Pass ``run_ids`` to restrict the result to a specific set of runs
+    (e.g. the pair-level runs produced by a single learning cycle).
+    """
     import pandas as pd
     query = "SELECT * FROM backtest_trades WHERE 1=1"
     params = []
-    if run_id:
+    if run_ids:
+        placeholders = ",".join("?" * len(run_ids))
+        query += f" AND run_id IN ({placeholders})"
+        params.extend(run_ids)
+    elif run_id:
         query += " AND run_id = ?"
         params.append(run_id)
     if strategy:
