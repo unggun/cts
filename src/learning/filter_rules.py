@@ -177,7 +177,9 @@ def parse_analyzer_filters(suggested_filters: list[dict]) -> list[dict]:
                 "feature": feature,
                 "operator": operator,
                 "threshold": threshold,
-                "type": "skip" if sf.get("effect_size", 0) < 0 else "prefer",
+                # Both analyzer branches emit skip-the-loser-side rules, so
+                # type is always "skip" — apply_filters ignores "prefer".
+                "type": "skip",
                 "effect_size": sf.get("effect_size"),
                 "rationale": sf.get("rationale", ""),
             })

@@ -122,20 +122,22 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
         if abs(effect_size) > 0.3:
             direction = "higher" if effect_size > 0 else "lower"
             if effect_size > 0.3:
-                # Winners have higher values — suggest minimum threshold
+                # Winners have higher values — skip when feature is on the loser side
+                # (<= midpoint between winner and loser means)
                 threshold = l_mean + 0.5 * (w_mean - l_mean)
                 findings["suggested_filters"].append({
                     "feature": col,
-                    "rule": f"{col} >= {threshold:.4f}",
+                    "rule": f"{col} <= {threshold:.4f}",
                     "effect_size": round(effect_size, 3),
                     "rationale": f"Winners avg {w_mean:.4f} vs losers {l_mean:.4f} ({direction} is better)",
                 })
             elif effect_size < -0.3:
-                # Winners have lower values — suggest maximum threshold
+                # Winners have lower values — skip when feature is on the loser side
+                # (>= midpoint between winner and loser means)
                 threshold = w_mean + 0.5 * (l_mean - w_mean)
                 findings["suggested_filters"].append({
                     "feature": col,
-                    "rule": f"{col} <= {threshold:.4f}",
+                    "rule": f"{col} >= {threshold:.4f}",
                     "effect_size": round(effect_size, 3),
                     "rationale": f"Winners avg {w_mean:.4f} vs losers {l_mean:.4f} ({direction} is better)",
                 })

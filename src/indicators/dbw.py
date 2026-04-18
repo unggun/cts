@@ -136,7 +136,10 @@ def calculate_dbw_levels(df: pd.DataFrame, idx: int,
         atr = entry * 0.02
 
     pattern_height = neckline - bottom_price
-    target = neckline + (pattern_height * target_multiplier)
+    # Anchor target off entry, not neckline — a strong breakout candle can push
+    # entry well above neckline, which collapses (target - entry) under the
+    # old neckline-anchored formula and causes mass RR rejection.
+    target = entry + (pattern_height * target_multiplier)
     stop_loss = bottom_price - (atr * sl_atr_mult)
     risk = entry - stop_loss
     risk_reward = (target - entry) / risk if risk > 0 else 0
