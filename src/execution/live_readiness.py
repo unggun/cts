@@ -241,6 +241,15 @@ def format_summary(reports: list) -> str:
             f"{counts['BLOCKED']} BLOCKED | {counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA")
 
 
+def short_summary(report: dict) -> str:
+    """One-line summary: status icon and label.
+
+    Example: '🟡 WATCH'. Used by the weekly Telegram summary and the
+    /readiness bot command.
+    """
+    return f"{_STATUS_ICON.get(report['status'], '')} {report['status']}"
+
+
 def main():
     """CLI entrypoint for live-readiness evaluation."""
     import argparse

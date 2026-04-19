@@ -339,3 +339,24 @@ def test_format_summary_counts_by_status():
     assert "1 WATCH" in out
     assert "2 BLOCKED" in out
     assert "1 INSUFFICIENT_DATA" in out
+
+
+def test_short_summary_ready():
+    assert lr.short_summary({"status": "READY"}) == "🟢 READY"
+
+
+def test_short_summary_watch():
+    assert lr.short_summary({"status": "WATCH"}) == "🟡 WATCH"
+
+
+def test_short_summary_blocked():
+    assert lr.short_summary({"status": "BLOCKED"}) == "🔴 BLOCKED"
+
+
+def test_short_summary_insufficient_data():
+    assert lr.short_summary({"status": "INSUFFICIENT_DATA"}) == "⚪ INSUFFICIENT_DATA"
+
+
+def test_short_summary_unknown_status_has_no_icon():
+    # Defensive: never raise on unexpected status
+    assert lr.short_summary({"status": "NEW_TIER"}) == " NEW_TIER"
