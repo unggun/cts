@@ -1,6 +1,6 @@
 """Evaluate per-strategy readiness to flip from paper to live trading."""
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from src.data.database import get_connection, init_db
 
@@ -88,7 +88,7 @@ def _empty_bucket() -> dict:
 
 def load_paper_stats(strategy: str, cutover: str | None, db_path: str = None) -> dict:
     """Load paper trading stats, split into pre/current around cutover timestamp."""
-    cutoff_dt = datetime.utcnow() - timedelta(days=PAPER_LOOKBACK_DAYS)
+    cutoff_dt = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=PAPER_LOOKBACK_DAYS)
     cutover_dt = _parse_ts(cutover) if cutover else None
 
     conn = get_connection(db_path)

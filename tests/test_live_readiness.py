@@ -1,7 +1,11 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 import pytest
 
@@ -20,7 +24,7 @@ def tmp_db():
 
 
 def _insert_mc(db_path, strategy, verdict, ruin, num_trades, when=None):
-    when = when or datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+    when = when or _utcnow_naive().isoformat(sep=" ", timespec="seconds")
     conn = get_connection(db_path)
     conn.execute(
         "INSERT INTO simulation_results (run_id, strategy, num_paths, "
@@ -34,7 +38,7 @@ def _insert_mc(db_path, strategy, verdict, ruin, num_trades, when=None):
 
 
 def _insert_session(db_path, strategy, confidence, when=None):
-    when = when or datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+    when = when or _utcnow_naive().isoformat(sep=" ", timespec="seconds")
     conn = get_connection(db_path)
     conn.execute(
         "INSERT INTO learning_sessions (session_type, strategy, num_trades_analyzed, "
@@ -147,8 +151,8 @@ def test_load_paper_stats_excludes_trades_older_than_30_days(tmp_db, monkeypatch
     original_dt = datetime
     class FakeDT:
         @classmethod
-        def utcnow(cls):
-            return original_dt(2026, 4, 19, 0, 0, 0)
+        def now(cls, tz=None):
+            return original_dt(2026, 4, 19, 0, 0, 0, tzinfo=tz)
 
         # Preserve fromisoformat for _parse_ts
         @staticmethod
