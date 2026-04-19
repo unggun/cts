@@ -111,9 +111,11 @@ The learning system only uses `backtest_trades` for analysis, not paper/live tra
 
 `src/execution/live_readiness.py` evaluates per-strategy readiness to flip from paper to live trading. Read-only, checks four gates: Monte Carlo verdict/ruin probability, Claude confidence, and current-param paper-trade stats (split around the latest `strategy_parameters.created_at` cutover; trades older than 30 days excluded). Status tiers: `INSUFFICIENT_DATA` (MC sample < 50) → `BLOCKED` → `WATCH` → `READY`. Flipping to live remains manual.
 
+The weekly learning-cycle Telegram summary (`_send_multi_strategy_telegram` in `src/run_learning_cycle.py`) includes a per-strategy status icon and a readiness footer. The Telegram bot's `/readiness` and `/readiness <strategy>` commands expose the same data on demand.
+
 ### Telegram Bot
 
-`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/help`. Run as a systemd service on the VPS.
+`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/readiness`, `/readiness <strategy>`, `/help`. Run as a systemd service on the VPS.
 
 ### Feature Extraction
 
