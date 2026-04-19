@@ -173,3 +173,109 @@ def evaluate_strategy(mc: dict | None, confidence: str | None, paper_stats: dict
         status = "READY"
 
     return {"status": status, "gates": gates}
+
+
+def build_report(strategy: str, db_path: str = None) -> dict:
+    """Build a complete readiness report for a strategy.
+
+    Integrates MC result, confidence, cutover timestamp, and paper stats
+    into a single report with status and gates.
+    """
+    mc = load_mc_result(strategy, db_path=db_path)
+    confidence = load_confidence(strategy, db_path=db_path)
+    cutover = load_param_cutover(strategy, db_path=db_path)
+    paper = load_paper_stats(strategy, cutover, db_path=db_path)
+    evaluation = evaluate_strategy(mc, confidence, paper)
+    return {
+        "strategy": strategy,
+        "status": evaluation["status"],
+        "gates": evaluation["gates"],
+        "mc": mc,
+        "confidence": confidence,
+        "paper": paper,
+        "cutover": cutover,
+    }
+
+
+_STATUS_ICON = {"READY": "🟢", "WATCH": "🟡", "BLOCKED": "🔴", "INSUFFICIENT_DATA": "⚪"}
+
+
+def _fmt_pct(value):
+    """Format a decimal value as percentage, or 'n/a' if None."""
+    return f"{value * 100:.1f}%" if value is not None else "n/a"
+
+
+def _fmt_bucket(bucket: dict) -> str:
+    """Format a stats bucket (pre_update or current) as a concise summary."""
+    c = bucket["closed"]
+    if c == 0:
+        return "0 closed"
+    return f"{c} closed, {_fmt_pct(bucket['win_rate'])} WR, {bucket['total_pnl_pct'] * 100:+.2f}% PnL"
+
+
+def format_text(report: dict) -> str:
+    """Format a report as human-readable text with strategy, status, and gates."""
+    lines = []
+    icon = _STATUS_ICON.get(report["status"], "")
+    lines.append(f"\nStrategy: {report['strategy']:<25s}  Status: {icon} {report['status']}")
+    lines.append("  " + "─" * 56)
+    for g in report["gates"]:
+        mark = "✓" if g["pass"] else "✗"
+        value_str = g["value"] if g["value"] is not None else "n/a"
+        if isinstance(g["value"], float):
+            value_str = f"{g['value']:.4f}" if g["name"] != "probability_of_ruin" else _fmt_pct(g["value"])
+        lines.append(f"  {g['name']:<22s} {str(value_str):<12s} {mark}  ({g['detail']})")
+    lines.append(f"  Paper (current params)  {_fmt_bucket(report['paper']['current'])}")
+    lines.append(f"  Paper (pre-update)      {_fmt_bucket(report['paper']['pre_update'])}  (informational)")
+    if report["cutover"]:
+        lines.append(f"  Param version since ... {report['cutover']}")
+    return "\n".join(lines)
+
+
+def format_summary(reports: list) -> str:
+    """Format a summary line counting strategies by status."""
+    counts = {"READY": 0, "WATCH": 0, "BLOCKED": 0, "INSUFFICIENT_DATA": 0}
+    for r in reports:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+    return (f"\nSummary: {counts['READY']} READY | {counts['WATCH']} WATCH | "
+            f"{counts['BLOCKED']} BLOCKED | {counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA")
+
+
+def main():
+    """CLI entrypoint for live-readiness evaluation."""
+    import argparse
+    import io
+    import contextlib
+
+    parser = argparse.ArgumentParser(description="Per-strategy live-trading readiness check")
+    parser.add_argument("--strategy", help="Evaluate a single strategy")
+    parser.add_argument("--json", action="store_true", help="Output as JSON")
+    args = parser.parse_args()
+
+    # Suppress init_db output when running with --json
+    if args.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            init_db()
+    else:
+        init_db()
+
+    strategies = [args.strategy] if args.strategy else KNOWN_STRATEGIES
+    reports = [build_report(s) for s in strategies]
+
+    if args.json:
+        payload = {
+            "reports": reports,
+            "summary": {
+                status: sum(1 for r in reports if r["status"] == status)
+                for status in ("READY", "WATCH", "BLOCKED", "INSUFFICIENT_DATA")
+            },
+        }
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        for r in reports:
+            print(format_text(r))
+        print(format_summary(reports))
+
+
+if __name__ == "__main__":
+    main()

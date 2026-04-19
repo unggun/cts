@@ -286,3 +286,52 @@ def test_evaluate_gates_list_has_pass_flags():
     assert "paper_win_rate" in gate_names
     assert "paper_total_pnl" in gate_names
     assert all(isinstance(g["pass"], bool) for g in r["gates"])
+
+
+def test_build_report_integrates_all_sources(tmp_db):
+    _insert_mc(tmp_db, "ma_crossover", "ROBUST", 0.018, 300)
+    _insert_session(tmp_db, "ma_crossover", "high")
+    _insert_params(tmp_db, "ma_crossover", 1, when="2026-04-18 22:00:00")
+    report = lr.build_report("ma_crossover", db_path=tmp_db)
+    assert report["strategy"] == "ma_crossover"
+    assert report["status"] in {"READY", "WATCH", "BLOCKED", "INSUFFICIENT_DATA"}
+    assert "gates" in report
+    assert report["mc"]["verdict"] == "ROBUST"
+    assert report["confidence"] == "high"
+
+
+def test_build_report_no_data_is_insufficient_data(tmp_db):
+    report = lr.build_report("unknown_strategy", db_path=tmp_db)
+    assert report["status"] == "INSUFFICIENT_DATA"
+    assert report["mc"] is None
+
+
+def test_format_text_contains_strategy_and_status():
+    report = {
+        "strategy": "dbw", "status": "BLOCKED",
+        "mc": {"verdict": "RISKY", "probability_of_ruin": 0.09, "num_source_trades": 166},
+        "confidence": "high",
+        "paper": {"current": {"closed": 0, "wins": 0, "win_rate": None, "total_pnl_pct": 0.0},
+                  "pre_update": {"closed": 5, "wins": 3, "win_rate": 0.6, "total_pnl_pct": 0.1}},
+        "cutover": "2026-04-18 22:00:00",
+        "gates": [{"name": "mc_verdict", "value": "RISKY", "pass": False, "detail": "need ROBUST"}],
+    }
+    out = lr.format_text(report)
+    assert "dbw" in out
+    assert "BLOCKED" in out
+    assert "RISKY" in out
+
+
+def test_format_summary_counts_by_status():
+    reports = [
+        {"strategy": "a", "status": "READY"},
+        {"strategy": "b", "status": "WATCH"},
+        {"strategy": "c", "status": "BLOCKED"},
+        {"strategy": "d", "status": "BLOCKED"},
+        {"strategy": "e", "status": "INSUFFICIENT_DATA"},
+    ]
+    out = lr.format_summary(reports)
+    assert "1 READY" in out
+    assert "1 WATCH" in out
+    assert "2 BLOCKED" in out
+    assert "1 INSUFFICIENT_DATA" in out
