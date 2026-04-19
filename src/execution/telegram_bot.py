@@ -113,6 +113,8 @@ class TelegramBot:
             "/positions": self._cmd_positions,
             "/pos": self._cmd_positions,
             "/equity": self._cmd_equity,
+            "/readiness": self._cmd_readiness,
+            "/ready": self._cmd_readiness,
             "/help": self._cmd_help,
             "/start": self._cmd_help,
         }
@@ -161,6 +163,8 @@ class TelegramBot:
             "`/positions live` — live positions only\n"
             "`/positions <strategy>` — filter by strategy\n"
             "`/equity` — equity summary per strategy\n"
+            "`/readiness` — per-strategy paper→live readiness\n"
+            "`/readiness <strategy>` — full gate detail for one strategy\n"
             "`/help` — this message"
         )
 
@@ -291,6 +295,45 @@ class TelegramBot:
         else:
             lines.append("\n_No closed trades in last 7 days_")
 
+        return "\n".join(lines)
+
+    def _cmd_readiness(self, args: list) -> str:
+        """Show live-trading readiness per strategy."""
+        from src.execution.live_readiness import (
+            KNOWN_STRATEGIES, build_report, format_text, short_summary,
+        )
+
+        # Single-strategy form
+        if args:
+            name = args[0].lower()
+            if name not in KNOWN_STRATEGIES:
+                known = ", ".join(KNOWN_STRATEGIES)
+                return f"Unknown strategy: {name}\nKnown: {known}"
+            try:
+                report = build_report(name)
+            except Exception as e:
+                return f"Error evaluating {name}: {type(e).__name__}"
+            return f"```\n{format_text(report)}\n```"
+
+        # Multi-strategy form
+        lines = ["📊 *Live-Readiness*\n"]
+        status_counts = {"READY": 0, "WATCH": 0, "BLOCKED": 0, "INSUFFICIENT_DATA": 0}
+
+        for strategy in KNOWN_STRATEGIES:
+            try:
+                report = build_report(strategy)
+            except Exception:
+                lines.append(f"*{strategy}*: ⚠️ error")
+                continue
+            lines.append(f"*{strategy}*: {short_summary(report)}")
+            status_counts[report["status"]] += 1
+
+        lines.append(
+            f"\n_{status_counts['READY']} READY | "
+            f"{status_counts['WATCH']} WATCH | "
+            f"{status_counts['BLOCKED']} BLOCKED | "
+            f"{status_counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA_"
+        )
         return "\n".join(lines)
 
 
