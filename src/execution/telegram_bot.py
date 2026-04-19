@@ -1,11 +1,13 @@
 """Telegram bot for querying trading status via chat commands.
 
 Runs as a long-polling bot that listens for commands:
-  /positions          — show all open positions
-  /positions paper    — paper positions only
-  /positions live     — live positions only
-  /equity             — show equity summary per strategy
-  /help               — show available commands
+  /positions             — show all open positions
+  /positions paper       — paper positions only
+  /positions live        — live positions only
+  /equity                — show equity summary per strategy
+  /readiness             — per-strategy paper→live readiness
+  /readiness <strategy>  — full gate detail for one strategy
+  /help                  — show available commands
 """
 import time
 import signal
