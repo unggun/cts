@@ -493,16 +493,38 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
     try:
         import requests
         from src.learning.parameter_store import get_performance_trend
+        from src.execution.live_readiness import build_report, short_summary
 
         lines = ["📊 *Multi-Strategy Weekly Summary*\n"]
 
+        status_counts = {"READY": 0, "WATCH": 0, "BLOCKED": 0, "INSUFFICIENT_DATA": 0}
+
         for strategy in strategies:
             trend = get_performance_trend(strategy)
+
+            try:
+                report = build_report(strategy)
+                icon_label = short_summary(report)
+                status_counts[report["status"]] += 1
+            except Exception:
+                report = None
+                icon_label = ""
+
             if trend:
                 latest = trend[-1]
                 wr = latest.get("win_rate_display", "?")
-                lines.append(f"*{strategy}*: WR {wr} (v{latest['version']})")
+                suffix = f" {icon_label.split()[0]}" if icon_label else ""
+                lines.append(f"*{strategy}*: WR {wr} (v{latest['version']}){suffix}")
+            elif report is not None:
+                # No trend yet but readiness was computed — still show the row
+                lines.append(f"*{strategy}*: {icon_label}")
 
+        lines.append(
+            f"\nReadiness: {status_counts['READY']} READY | "
+            f"{status_counts['WATCH']} WATCH | "
+            f"{status_counts['BLOCKED']} BLOCKED | "
+            f"{status_counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA"
+        )
         lines.append("\n_Run parameter\\_store --trend for full history_")
 
         message = "\n".join(lines)
