@@ -118,3 +118,58 @@ def load_paper_stats(strategy: str, cutover: str | None, db_path: str = None) ->
         if b["closed"] > 0:
             b["win_rate"] = b["wins"] / b["closed"]
     return buckets
+
+
+def evaluate_strategy(mc: dict | None, confidence: str | None, paper_stats: dict) -> dict:
+    """Evaluate readiness of a strategy to flip from paper to live trading.
+
+    Pure function: takes loaded MC result, confidence level, and paper stats.
+    Returns status (INSUFFICIENT_DATA, BLOCKED, WATCH, READY) and gates list.
+    """
+    cur = paper_stats["current"]
+    gates = []
+
+    mc_verdict = mc["verdict"] if mc else None
+    mc_ruin = mc["probability_of_ruin"] if mc else None
+    mc_trades = mc["num_source_trades"] if mc else 0
+
+    gates.append({"name": "mc_verdict", "value": mc_verdict,
+                  "pass": mc_verdict == "ROBUST", "detail": "need ROBUST"})
+    gates.append({"name": "probability_of_ruin", "value": mc_ruin,
+                  "pass": mc_ruin is not None and mc_ruin < MAX_RUIN_PROB,
+                  "detail": f"need < {MAX_RUIN_PROB:.0%}"})
+    gates.append({"name": "mc_source_trades", "value": mc_trades,
+                  "pass": mc_trades >= MIN_MC_TRADES,
+                  "detail": f"need >= {MIN_MC_TRADES}"})
+    gates.append({"name": "confidence", "value": confidence,
+                  "pass": confidence == "high", "detail": "need high"})
+    gates.append({"name": "paper_trades", "value": cur["closed"],
+                  "pass": cur["closed"] >= MIN_PAPER_TRADES,
+                  "detail": f"need >= {MIN_PAPER_TRADES} closed (current params)"})
+    wr_pass = cur["win_rate"] is not None and cur["win_rate"] >= MIN_PAPER_WR
+    gates.append({"name": "paper_win_rate", "value": cur["win_rate"],
+                  "pass": wr_pass, "detail": f"need >= {MIN_PAPER_WR:.0%}"})
+    gates.append({"name": "paper_total_pnl", "value": cur["total_pnl_pct"],
+                  "pass": cur["total_pnl_pct"] > 0, "detail": "need > 0"})
+
+    # Status tiers — first match wins.
+    if mc is None or mc_trades < MIN_MC_TRADES:
+        status = "INSUFFICIENT_DATA"
+    elif (
+        mc_verdict in ("FRAGILE", "RISKY")
+        or (mc_ruin is not None and mc_ruin >= MAX_RUIN_PROB)
+        or confidence in (None, "low")
+        or (cur["closed"] >= MIN_PAPER_TRADES and cur["total_pnl_pct"] <= 0)
+    ):
+        status = "BLOCKED"
+    elif (
+        cur["closed"] < MIN_PAPER_TRADES
+        or confidence == "medium"
+        or (cur["win_rate"] is not None and cur["win_rate"] < MIN_PAPER_WR
+            and cur["total_pnl_pct"] > 0)
+    ):
+        status = "WATCH"
+    else:
+        status = "READY"
+
+    return {"status": status, "gates": gates}

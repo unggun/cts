@@ -200,3 +200,89 @@ def test_load_confidence_handles_malformed_recommendations_json(tmp_db):
     conn.commit()
     conn.close()
     assert lr.load_confidence("dbw", db_path=tmp_db) is None
+
+
+def _mc(verdict="ROBUST", ruin=0.01, trades=200):
+    return {"verdict": verdict, "probability_of_ruin": ruin,
+            "num_source_trades": trades, "created_at": "2026-04-18 22:00:00"}
+
+
+def _paper(closed=30, wins=20, pnl=0.15):
+    wr = wins / closed if closed else None
+    return {
+        "current": {"closed": closed, "wins": wins, "win_rate": wr, "total_pnl_pct": pnl},
+        "pre_update": {"closed": 0, "wins": 0, "win_rate": None, "total_pnl_pct": 0.0},
+    }
+
+
+def test_evaluate_ready_all_gates_pass():
+    r = lr.evaluate_strategy(_mc(), "high", _paper())
+    assert r["status"] == "READY"
+
+
+def test_evaluate_insufficient_data_when_few_mc_trades():
+    r = lr.evaluate_strategy(_mc(trades=19), "high", _paper())
+    assert r["status"] == "INSUFFICIENT_DATA"
+
+
+def test_evaluate_insufficient_data_when_no_mc():
+    r = lr.evaluate_strategy(None, "high", _paper())
+    assert r["status"] == "INSUFFICIENT_DATA"
+
+
+def test_evaluate_blocked_on_fragile_verdict():
+    r = lr.evaluate_strategy(_mc(verdict="FRAGILE"), "high", _paper())
+    assert r["status"] == "BLOCKED"
+
+
+def test_evaluate_blocked_on_risky_verdict():
+    r = lr.evaluate_strategy(_mc(verdict="RISKY"), "high", _paper())
+    assert r["status"] == "BLOCKED"
+
+
+def test_evaluate_blocked_on_high_ruin():
+    r = lr.evaluate_strategy(_mc(ruin=0.05), "high", _paper())
+    assert r["status"] == "BLOCKED"
+
+
+def test_evaluate_blocked_on_low_confidence():
+    r = lr.evaluate_strategy(_mc(), "low", _paper())
+    assert r["status"] == "BLOCKED"
+
+
+def test_evaluate_blocked_on_missing_confidence():
+    r = lr.evaluate_strategy(_mc(), None, _paper())
+    assert r["status"] == "BLOCKED"
+
+
+def test_evaluate_blocked_on_negative_pnl_with_enough_samples():
+    r = lr.evaluate_strategy(_mc(), "high", _paper(closed=30, wins=10, pnl=-0.05))
+    assert r["status"] == "BLOCKED"
+
+
+def test_evaluate_watch_when_sample_too_small():
+    r = lr.evaluate_strategy(_mc(), "high", _paper(closed=5, wins=3, pnl=0.02))
+    assert r["status"] == "WATCH"
+
+
+def test_evaluate_watch_on_medium_confidence():
+    r = lr.evaluate_strategy(_mc(), "medium", _paper())
+    assert r["status"] == "WATCH"
+
+
+def test_evaluate_watch_on_low_wr_but_positive_pnl():
+    r = lr.evaluate_strategy(_mc(), "high", _paper(closed=30, wins=12, pnl=0.04))
+    assert r["status"] == "WATCH"
+
+
+def test_evaluate_gates_list_has_pass_flags():
+    r = lr.evaluate_strategy(_mc(), "high", _paper())
+    gate_names = {g["name"] for g in r["gates"]}
+    assert "mc_verdict" in gate_names
+    assert "probability_of_ruin" in gate_names
+    assert "mc_source_trades" in gate_names
+    assert "confidence" in gate_names
+    assert "paper_trades" in gate_names
+    assert "paper_win_rate" in gate_names
+    assert "paper_total_pnl" in gate_names
+    assert all(isinstance(g["pass"], bool) for g in r["gates"])
