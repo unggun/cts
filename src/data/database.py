@@ -1,5 +1,6 @@
 """SQLite database schema and operations for the trading system."""
 import sqlite3
+import sys
 import json
 from datetime import datetime
 from pathlib import Path
@@ -150,7 +151,7 @@ def init_db(db_path: str = None):
 
     conn.commit()
     conn.close()
-    print(f"Database initialized at {db_path or get_db_path()}")
+    print(f"Database initialized at {db_path or get_db_path()}", file=sys.stderr)
 
 
 # ── OHLCV operations ──

@@ -244,20 +244,13 @@ def format_summary(reports: list) -> str:
 def main():
     """CLI entrypoint for live-readiness evaluation."""
     import argparse
-    import io
-    import contextlib
 
     parser = argparse.ArgumentParser(description="Per-strategy live-trading readiness check")
     parser.add_argument("--strategy", help="Evaluate a single strategy")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     args = parser.parse_args()
 
-    # Suppress init_db output when running with --json
-    if args.json:
-        with contextlib.redirect_stdout(io.StringIO()):
-            init_db()
-    else:
-        init_db()
+    init_db()
 
     strategies = [args.strategy] if args.strategy else KNOWN_STRATEGIES
     reports = [build_report(s) for s in strategies]
