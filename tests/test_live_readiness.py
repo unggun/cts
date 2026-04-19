@@ -144,12 +144,59 @@ def test_load_paper_stats_ignores_open_trades(tmp_db):
 
 def test_load_paper_stats_excludes_trades_older_than_30_days(tmp_db, monkeypatch):
     # Freeze "now" to 2026-04-19
+    original_dt = datetime
     class FakeDT:
         @classmethod
         def utcnow(cls):
-            return datetime(2026, 4, 19, 0, 0, 0)
+            return original_dt(2026, 4, 19, 0, 0, 0)
+
+        # Preserve fromisoformat for _parse_ts
+        @staticmethod
+        def fromisoformat(s):
+            return original_dt.fromisoformat(s)
     monkeypatch.setattr(lr, "datetime", FakeDT)
     _insert_paper_trade(tmp_db, "dbw", "2026-03-01 10:00:00", 0.05)  # ~49 days old
     _insert_paper_trade(tmp_db, "dbw", "2026-04-18 10:00:00", 0.05)  # 1 day old
     stats = lr.load_paper_stats("dbw", None, db_path=tmp_db)
     assert stats["current"]["closed"] == 1
+
+
+def test_load_paper_stats_handles_mixed_timestamp_formats(tmp_db):
+    """entry_time is ISO-T format (from paper_trader); cutover is space format (from SQLite default).
+    Comparison must be datetime-based, not lexicographic."""
+    cutover_space = "2026-04-18 22:01:17"
+    # Entry BEFORE cutover (05:00 < 22:01), T-format — must land in pre_update
+    _insert_paper_trade(tmp_db, "dbw", "2026-04-18T05:00:00.123456", 0.04)
+    # Entry AFTER cutover (23:53 > 22:01), T-format — must land in current
+    _insert_paper_trade(tmp_db, "dbw", "2026-04-18T23:53:04.375191", 0.03)
+
+    stats = lr.load_paper_stats("dbw", cutover_space, db_path=tmp_db)
+    assert stats["pre_update"]["closed"] == 1
+    assert stats["current"]["closed"] == 1
+
+
+def test_load_mc_result_handles_malformed_details_json(tmp_db):
+    conn = get_connection(tmp_db)
+    conn.execute(
+        "INSERT INTO simulation_results (run_id, strategy, num_paths, "
+        "initial_capital, probability_of_ruin, verdict, details_json, created_at) "
+        "VALUES (?, ?, 10000, 10000000, ?, ?, ?, ?)",
+        ("test", "dbw", 0.02, "ROBUST", "NOT VALID JSON", "2026-04-18 22:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    result = lr.load_mc_result("dbw", db_path=tmp_db)
+    assert result["verdict"] == "ROBUST"
+    assert result["num_source_trades"] == 0  # falls back to 0 on parse failure
+
+
+def test_load_confidence_handles_malformed_recommendations_json(tmp_db):
+    conn = get_connection(tmp_db)
+    conn.execute(
+        "INSERT INTO learning_sessions (session_type, strategy, num_trades_analyzed, "
+        "recommendations_json, created_at) VALUES (?, ?, 100, ?, ?)",
+        ("claude_review", "dbw", "NOT VALID JSON", "2026-04-18 22:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    assert lr.load_confidence("dbw", db_path=tmp_db) is None

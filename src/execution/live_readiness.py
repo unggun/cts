@@ -28,7 +28,12 @@ def load_mc_result(strategy: str, db_path: str = None) -> dict | None:
     conn.close()
     if row is None:
         return None
-    details = json.loads(row["details_json"]) if row["details_json"] else {}
+    details = {}
+    if row["details_json"]:
+        try:
+            details = json.loads(row["details_json"])
+        except (json.JSONDecodeError, TypeError):
+            details = {}
     return {
         "verdict": row["verdict"],
         "probability_of_ruin": row["probability_of_ruin"],
@@ -71,6 +76,11 @@ def load_param_cutover(strategy: str, db_path: str = None) -> str | None:
     return row["created_at"] if row else None
 
 
+def _parse_ts(s: str) -> datetime:
+    """Parse an ISO timestamp from the DB, accepting either 'T' or ' ' separator."""
+    return datetime.fromisoformat(s.replace("T", " "))
+
+
 def _empty_bucket() -> dict:
     """Return an empty stats bucket template."""
     return {"closed": 0, "wins": 0, "win_rate": None, "total_pnl_pct": 0.0}
@@ -78,12 +88,14 @@ def _empty_bucket() -> dict:
 
 def load_paper_stats(strategy: str, cutover: str | None, db_path: str = None) -> dict:
     """Load paper trading stats, split into pre/current around cutover timestamp."""
-    cutoff = (datetime.utcnow() - timedelta(days=PAPER_LOOKBACK_DAYS)).isoformat(sep=" ")
+    cutoff_dt = datetime.utcnow() - timedelta(days=PAPER_LOOKBACK_DAYS)
+    cutover_dt = _parse_ts(cutover) if cutover else None
+
     conn = get_connection(db_path)
     rows = conn.execute(
         "SELECT entry_time, exit_time, pnl_pct FROM trade_journal "
-        "WHERE mode = 'paper' AND strategy = ? AND entry_time >= ?",
-        (strategy, cutoff),
+        "WHERE mode = 'paper' AND strategy = ?",
+        (strategy,),
     ).fetchall()
     conn.close()
 
@@ -91,7 +103,10 @@ def load_paper_stats(strategy: str, cutover: str | None, db_path: str = None) ->
     for row in rows:
         if row["exit_time"] is None:
             continue
-        bucket_name = "current" if (cutover is None or row["entry_time"] >= cutover) else "pre_update"
+        entry_dt = _parse_ts(row["entry_time"])
+        if entry_dt < cutoff_dt:
+            continue
+        bucket_name = "current" if (cutover_dt is None or entry_dt >= cutover_dt) else "pre_update"
         b = buckets[bucket_name]
         b["closed"] += 1
         pnl = row["pnl_pct"] or 0.0
