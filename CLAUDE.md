@@ -45,6 +45,11 @@ python3 -m src.execution.positions --mode paper
 python3 -m src.execution.positions --strategy rsi_vwap
 python3 -m src.execution.positions --json
 
+# Check live-trading readiness (per strategy: READY / WATCH / BLOCKED / INSUFFICIENT_DATA)
+python3 -m src.execution.live_readiness
+python3 -m src.execution.live_readiness --strategy dbw
+python3 -m src.execution.live_readiness --json
+
 # Telegram bot (listens for /positions, /equity, /help commands)
 python3 -m src.execution.telegram_bot
 
@@ -101,6 +106,10 @@ The learning system only uses `backtest_trades` for analysis, not paper/live tra
 ### Position Queries
 
 `src/execution/positions.py` provides a CLI to query open positions from `trade_journal`. Open positions are identified by `exit_time IS NULL`.
+
+### Live-Readiness Check
+
+`src/execution/live_readiness.py` evaluates per-strategy readiness to flip from paper to live trading. Read-only, checks four gates: Monte Carlo verdict/ruin probability, Claude confidence, and current-param paper-trade stats (split around the latest `strategy_parameters.created_at` cutover; trades older than 30 days excluded). Status tiers: `INSUFFICIENT_DATA` (MC sample < 50) → `BLOCKED` → `WATCH` → `READY`. Flipping to live remains manual.
 
 ### Telegram Bot
 
