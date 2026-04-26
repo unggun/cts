@@ -332,7 +332,8 @@ class LiveTrader:
         )
 
         self._log_exit(conn, pair, result.price, result.reason,
-                       pnl_pct, pnl_absolute, pos)
+                       pnl_pct, pnl_absolute, pos,
+                       exit_time=result.time or None)
         del self.positions[pair]
         return True
 
@@ -628,8 +629,12 @@ class LiveTrader:
         ))
         conn.commit()
 
-    def _log_exit(self, conn, pair, price, reason, pnl_pct, pnl_abs, pos):
-        """Update trade journal with exit info."""
+    def _log_exit(self, conn, pair, price, reason, pnl_pct, pnl_abs, pos,
+                  exit_time: str | None = None):
+        """Update trade journal with exit info. exit_time defaults to
+        wall-clock when not provided; for exchange-protected fills,
+        callers should pass the FillResult.time / ClosedWhileDown.time
+        so the audit trail records the actual exchange fill time."""
         cur = conn.cursor()
         cur.execute("""
             UPDATE trade_journal SET
@@ -639,36 +644,124 @@ class LiveTrader:
                 AND exit_time IS NULL
             ORDER BY created_at DESC LIMIT 1
         """, (
-            datetime.now().isoformat(), price, reason,
+            exit_time or datetime.now().isoformat(), price, reason,
             pnl_pct, pnl_abs, pair, self.strategy
         ))
         conn.commit()
 
     def _restore_positions(self):
-        """Restore open positions from DB on startup."""
+        """Restore open positions from DB on startup. For positions
+        protected by exchange-side OCO/stop, reconcile state with the
+        exchange (still active / closed-while-down / naked)."""
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("""
             SELECT pair, entry_time, entry_price, stop_loss, take_profit,
-                   position_size, features_json
+                   position_size, features_json,
+                   protection_mode, protection_order_id, protection_child_ids
             FROM trade_journal
             WHERE mode='live' AND strategy=? AND exit_time IS NULL
         """, (self.strategy,))
         rows = cur.fetchall()
+
         for row in rows:
-            self.positions[row["pair"]] = {
+            # `is_ath` is not persisted, but it's equivalent to
+            # `protection_mode == "stop_only"` by construction —
+            # stop-only protection is only used for ATH-breakout
+            # positions. This keeps the trailing ratchet working
+            # after a restart.
+            protection_mode = row["protection_mode"]
+            child_ids_raw = row["protection_child_ids"]
+            child_ids = tuple(json.loads(child_ids_raw)) if child_ids_raw else None
+
+            pos = {
                 "entry_time": row["entry_time"],
                 "entry_price": row["entry_price"],
                 "stop_loss": row["stop_loss"],
                 "target": row["take_profit"],
                 "position_size": row["position_size"],
-                "is_ath": False,
+                "is_ath": protection_mode == "stop_only",
                 "features": json.loads(row["features_json"] or "{}"),
+                "protection_mode": protection_mode,
+                "protection_order_id": row["protection_order_id"],
+                "protection_child_ids": child_ids,
             }
+            pair = row["pair"]
+
+            if protection_mode in ("oco", "stop_only"):
+                self._reconcile_position(pair, pos, conn)
+            else:
+                # polling mode or legacy NULL — restore as today.
+                self.positions[pair] = pos
+
         conn.close()
         if self.positions:
             print(f"  Restored {len(self.positions)} open positions: "
                   f"{', '.join(self.positions.keys())}")
+
+    def _reconcile_position(self, pair, pos, conn):
+        """Check exchange state for a restored position. Three outcomes:
+          Active           — adopt the open order id; restore position.
+          ClosedWhileDown  — close the position in DB with real exit;
+                             do not restore.
+          Naked            — re-place protection (or fall back to polling).
+        """
+        try:
+            result = prot.reconcile_on_restart(self.exchange, pair, pos)
+        except Exception as e:
+            print(f"  ⚠️ Could not reconcile {pair}: {e}. "
+                  "Falling back to polling.")
+            pos["protection_mode"] = "polling"
+            self.positions[pair] = pos
+            return
+
+        if isinstance(result, prot.Active):
+            pos["protection_order_id"] = result.order_id
+            pos["protection_child_ids"] = result.child_ids
+            self.positions[pair] = pos
+            print(f"  Adopted active {pos['protection_mode']} for {pair} "
+                  f"(order {result.order_id})")
+
+        elif isinstance(result, prot.ClosedWhileDown):
+            print(f"  ℹ️ {pair} closed while bot was down: "
+                  f"{result.reason} @ {result.price:,.0f}")
+            self._notify(
+                f"ℹ️ {pair} closed while bot was down: "
+                f"{result.reason} @ {result.price:,.0f} (at {result.time})"
+            )
+            pnl_per_unit = result.price - pos["entry_price"]
+            pnl_absolute = pnl_per_unit * pos["position_size"]
+            pnl_pct = pnl_per_unit / pos["entry_price"]
+            self._log_exit(conn, pair, result.price, result.reason,
+                           pnl_pct, pnl_absolute, pos,
+                           exit_time=result.time or None)
+            # Do NOT add to self.positions — it's closed.
+
+        elif isinstance(result, prot.Naked):
+            print(f"  ⚠️ {pair} restored without protection — re-placing")
+            self._notify(f"⚠️ {pair} restored without protection — re-placing")
+
+            protection_cfg = self.config.get("risk", {}).get("protection", {})
+            prot_result = prot.place_protection(
+                self.exchange, pair, pos["position_size"],
+                stop_loss=pos["stop_loss"],
+                target=pos["target"],
+                is_ath=pos["is_ath"],
+                strategy=self.strategy,
+                retry=protection_cfg.get("retry_attempts", 3),
+                backoff_seconds=protection_cfg.get(
+                    "retry_backoff_seconds", [1, 2, 4]
+                ),
+                stop_limit_slip_pct=protection_cfg.get(
+                    "stop_limit_slip_pct", 0.005
+                ),
+            )
+            pos["protection_mode"] = (
+                prot_result.mode if prot_result.mode != "error" else "polling"
+            )
+            pos["protection_order_id"] = prot_result.order_id
+            pos["protection_child_ids"] = prot_result.child_ids
+            self.positions[pair] = pos
 
     def _notify(self, message: str):
         """Send Telegram notification."""
