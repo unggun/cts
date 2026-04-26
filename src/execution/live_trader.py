@@ -304,13 +304,16 @@ class LiveTrader:
             pos["protection_mode"] = "polling"
             pos["protection_order_id"] = None
             pos["protection_child_ids"] = None
+            self._update_protection_state(
+                conn, pair, "polling", None, None
+            )
             return False
 
         if result is None:
             # Still active and unfilled. For ATH stop-only, check whether
             # we should ratchet the trailing stop up.
             if mode == "stop_only" and pos.get("is_ath"):
-                self._maybe_ratchet_trailing_stop(pair, pos, df, idx)
+                self._maybe_ratchet_trailing_stop(pair, pos, df, idx, conn)
             return False
 
         # FillResult: exchange already executed the sell. Close locally.
@@ -337,7 +340,7 @@ class LiveTrader:
         del self.positions[pair]
         return True
 
-    def _maybe_ratchet_trailing_stop(self, pair, pos, df, idx):
+    def _maybe_ratchet_trailing_stop(self, pair, pos, df, idx, conn):
         """For ATH stop-only positions: compute new trailing stop from
         recent candles. If it's higher than the current stop by at least
         min_trail_ratchet_pct, cancel-and-replace the exchange order."""
@@ -370,12 +373,18 @@ class LiveTrader:
             self._notify(f"⚠️ {pair} trail replace failed — polling fallback")
             pos["protection_mode"] = "polling"
             pos["protection_order_id"] = None
+            self._update_protection_state(
+                conn, pair, "polling", None, None
+            )
         elif result.mode == "kept":
             # cancel failed; old order still active. Don't change in-memory state.
             pass
         else:  # "stop_only" success
             pos["stop_loss"] = new_trail
             pos["protection_order_id"] = result.order_id
+            self._update_protection_state(
+                conn, pair, "stop_only", result.order_id, None
+            )
             print(f"  ↗ {pair} trailing stop ratcheted to {new_trail:,.0f}")
 
     def _try_entry(self, df, idx, pair, conn):
@@ -608,6 +617,29 @@ class LiveTrader:
             print(f"     ❌ Sell failed: {e}")
             self._notify(f"⚠️ SELL FAILED for {pair}: {e}")
 
+    def _update_protection_state(self, conn, pair, protection_mode,
+                                  protection_order_id, protection_child_ids):
+        """Persist the three protection columns to the open trade_journal
+        row for this pair. Called when protection state transitions
+        between buy and exit (e.g., LostProtection downgrade, trailing
+        stop replace, Naked re-placement)."""
+        cur = conn.cursor()
+        child_ids_json = (json.dumps(list(protection_child_ids))
+                          if protection_child_ids else None)
+        cur.execute("""
+            UPDATE trade_journal SET
+                protection_mode=?,
+                protection_order_id=?,
+                protection_child_ids=?
+            WHERE mode='live' AND pair=? AND strategy=?
+                AND exit_time IS NULL
+            ORDER BY created_at DESC LIMIT 1
+        """, (
+            protection_mode, protection_order_id, child_ids_json,
+            pair, self.strategy,
+        ))
+        conn.commit()
+
     def _log_entry(self, conn, pair, price, levels, size, features,
                    protection_mode, protection_order_id, protection_child_ids):
         """Log trade entry to journal."""
@@ -672,7 +704,13 @@ class LiveTrader:
             # after a restart.
             protection_mode = row["protection_mode"]
             child_ids_raw = row["protection_child_ids"]
-            child_ids = tuple(json.loads(child_ids_raw)) if child_ids_raw else None
+            try:
+                child_ids = (tuple(json.loads(child_ids_raw))
+                             if child_ids_raw else None)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"  ⚠️ {row['pair']} has malformed "
+                      f"protection_child_ids ({e}); treating as None")
+                child_ids = None
 
             pos = {
                 "entry_time": row["entry_time"],
@@ -712,6 +750,11 @@ class LiveTrader:
             print(f"  ⚠️ Could not reconcile {pair}: {e}. "
                   "Falling back to polling.")
             pos["protection_mode"] = "polling"
+            pos["protection_order_id"] = None
+            pos["protection_child_ids"] = None
+            self._update_protection_state(
+                conn, pair, "polling", None, None
+            )
             self.positions[pair] = pos
             return
 
@@ -761,6 +804,12 @@ class LiveTrader:
             )
             pos["protection_order_id"] = prot_result.order_id
             pos["protection_child_ids"] = prot_result.child_ids
+            self._update_protection_state(
+                conn, pair,
+                pos["protection_mode"],
+                pos["protection_order_id"],
+                pos["protection_child_ids"],
+            )
             self.positions[pair] = pos
 
     def _notify(self, message: str):
