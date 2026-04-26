@@ -366,6 +366,18 @@ class TestCheckProtectionFillStopOnly:
         assert isinstance(result, FillResult)
         assert result.time == ""
 
+    def test_filled_with_missing_price_returns_none(self):
+        # Defensive: malformed response with no price → return None,
+        # don't crash with float(None).
+        ex = MagicMock()
+        ex.fetch_order.return_value = {
+            "id": "S1", "status": "closed",
+            # no average, no price
+            "lastTradeTimestamp": 1_700_000_000_000,
+        }
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert result is None
+
 
 class TestCheckProtectionFillOCO:
     def _pos(self):
@@ -421,10 +433,15 @@ class TestCheckProtectionFillOCO:
         assert result.reason == "stop_loss"
 
     def test_one_child_open_one_gone_uses_trade_lookup(self):
-        # TP filled, SL auto-cancelled by OCO.
+        # TP filled, SL auto-cancelled by OCO. SL doesn't appear in open
+        # orders; TP doesn't either (it filled). Trade record reveals
+        # which one filled.
         ex = MagicMock()
         ex.fetch_open_orders.return_value = [
-            # SL was auto-cancelled, doesn't appear in open orders.
+            # Imagine a different OCO's leg is also live on this pair —
+            # we should NOT match it.
+            {"id": "OTHER_TP", "status": "open"},
+            {"id": "OTHER_SL", "status": "open"},
         ]
         ex.fetch_my_trades.return_value = [
             {

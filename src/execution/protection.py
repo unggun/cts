@@ -232,6 +232,19 @@ def _ts_to_iso(ts_ms) -> str:
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).replace(tzinfo=None).isoformat()
 
 
+def _safe_price(record) -> float | None:
+    """Read average-then-price from a trade or order record, returning
+    None if neither is present. Avoids float(None) crashes on malformed
+    exchange responses."""
+    raw = record.get("average") if record.get("average") is not None else record.get("price")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def check_protection_fill(exchange, pair, position):
     """Per-loop check: has the protective order filled, gone missing, or
     is it still active? Returns FillResult, LostProtection, or None."""
@@ -251,8 +264,13 @@ def _check_stop_only_fill(exchange, pair, position):
     if status == "open":
         return None
     if status in ("closed", "filled"):
+        price = _safe_price(order)
+        if price is None:
+            # Malformed response — treat as still-active so we retry
+            # next loop rather than emit a corrupt FillResult.
+            return None
         return FillResult(
-            price=float(order.get("average") or order.get("price")),
+            price=price,
             reason="stop_loss",
             time=_ts_to_iso(order.get("lastTradeTimestamp")),
         )
@@ -274,12 +292,14 @@ def _check_oco_fill(exchange, pair, position):
         return None  # both legs still active
 
     # At least one leg is gone. Look up which one filled via my_trades.
-    # Use a `since` slightly before entry_time to handle clock skew.
+    # Use a `since` slightly before entry_time to handle clock skew —
+    # if the exchange's clock is ahead of ours, the fill could have a
+    # timestamp earlier than entry_time as we computed it. Subtract 5s.
     since_iso = position.get("entry_time")
     since_ms = None
     if since_iso:
         try:
-            since_ms = int(datetime.fromisoformat(since_iso).timestamp() * 1000)
+            since_ms = int(datetime.fromisoformat(since_iso).timestamp() * 1000) - 5000
         except (ValueError, TypeError):
             since_ms = None
 
@@ -289,14 +309,20 @@ def _check_oco_fill(exchange, pair, position):
             continue
         order_ref = str(trade.get("order") or "")
         if order_ref == tp_id:
+            price = _safe_price(trade)
+            if price is None:
+                return None
             return FillResult(
-                price=float(trade.get("average") or trade.get("price")),
+                price=price,
                 reason="target",
                 time=_ts_to_iso(trade.get("timestamp")),
             )
         if order_ref == sl_id:
+            price = _safe_price(trade)
+            if price is None:
+                return None
             return FillResult(
-                price=float(trade.get("average") or trade.get("price")),
+                price=price,
                 reason="stop_loss",
                 time=_ts_to_iso(trade.get("timestamp")),
             )
