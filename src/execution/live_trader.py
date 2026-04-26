@@ -924,6 +924,19 @@ def preflight_check(config: dict = None) -> bool:
     except Exception:
         checks.append(("Paper trades logged", False))
 
+    # 8. CCXT exposes the OCO endpoint
+    protection_cfg = config.get("risk", {}).get("protection", {})
+    if protection_cfg.get("enabled", True):
+        try:
+            from src.data.downloader import create_exchange
+            ex = create_exchange(config, authenticated=False)
+            has_oco = hasattr(ex, "privatePostOpenV1OrdersOco")
+            has_stop = hasattr(ex, "private_post_open_v1_orders")
+            checks.append(("CCXT supports Tokocrypto OCO", has_oco))
+            checks.append(("CCXT supports Tokocrypto stop-loss-limit", has_stop))
+        except Exception as e:
+            checks.append((f"CCXT OCO capability check ({e})", False))
+
     # Print results
     all_pass = True
     for check_name, passed in checks:

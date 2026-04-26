@@ -103,6 +103,25 @@ Seven tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_para
 
 The learning system only uses `backtest_trades` for analysis, not paper/live trades. Paper/live trading validates the strategy in real-time conditions.
 
+### Exchange-Side Protection (OCO / Stop-Loss-Limit)
+
+`src/execution/protection.py` places real protective sell orders on Tokocrypto
+after a buy fill: an **OCO** for fixed-target strategies, a **STOP_LOSS_LIMIT**
+for Darvas ATH-breakout positions (which trail). Polling-based exits in
+`live_trader._check_exit` are now a fallback path used only when placement
+fails (`protection_mode="polling"`) or for legacy positions.
+
+Protection state is observable via the `protection_mode` column on
+`trade_journal` (`oco` | `stop_only` | `polling` | `simulated`) and via
+`/positions` (CLI) and the Telegram bot.
+
+Master switch: `risk.protection.enabled` in `config.yaml` — set to `false`
+to revert to today's polling-only behavior without code changes.
+
+On bot restart, `_restore_positions` reconciles each restored position with
+the exchange (still active / closed-while-down / naked) and re-places
+protection if it's missing.
+
 ### Position Queries
 
 `src/execution/positions.py` provides a CLI to query open positions from `trade_journal`. Open positions are identified by `exit_time IS NULL`.

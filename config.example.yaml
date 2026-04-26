@@ -143,6 +143,15 @@ risk:
   # Kelly criterion fraction (use half-Kelly for safety)
   kelly_fraction: 0.5
 
+  # Exchange-side protection orders (Tokocrypto OCO + STOP_LOSS_LIMIT).
+  # See docs/superpowers/specs/2026-04-26-tokocrypto-oco-protection-design.md
+  protection:
+    enabled: true                    # master switch; false = legacy polling-only
+    stop_limit_slip_pct: 0.005       # how far below stopPrice the limit price sits
+    min_trail_ratchet_pct: 0.005     # ATH ratchet gate (0.5% min bump)
+    retry_attempts: 3
+    retry_backoff_seconds: [1, 2, 4]
+
 simulation:
   # Monte Carlo settings
   num_paths: 10000
