@@ -84,9 +84,19 @@ def tokocrypto_symbol(ccxt_pair: str) -> str:
     return ccxt_pair.replace("/", "_")
 
 
+def _sleep_backoff(backoff_seconds, attempt: int) -> None:
+    """Sleep based on the attempt index, clamped to the last entry
+    if the attempt exceeds the backoff list length."""
+    idx = min(attempt, len(backoff_seconds) - 1)
+    time.sleep(backoff_seconds[idx])
+
+
 # ─── OCO placement ───────────────────────────────────────────
 
-def _build_oco_params(pair, size, stop_loss, target, strategy, stop_limit_slip_pct):
+def _build_oco_params(
+    pair: str, size: float, stop_loss: float, target: float,
+    strategy: str, stop_limit_slip_pct: float,
+) -> dict:
     return {
         "symbol": tokocrypto_symbol(pair),
         "side": "SELL",
@@ -96,6 +106,22 @@ def _build_oco_params(pair, size, stop_loss, target, strategy, stop_limit_slip_p
         "stopLimitPrice": stop_loss * (1 - stop_limit_slip_pct),
         "stopLimitTimeInForce": "GTC",
         "listClientOrderId": f"cts-{strategy}-{uuid.uuid4().hex[:8]}",
+    }
+
+
+def _build_stop_only_params(
+    pair: str, size: float, stop_loss: float,
+    strategy: str, stop_limit_slip_pct: float,
+) -> dict:
+    return {
+        "symbol": tokocrypto_symbol(pair),
+        "side": "SELL",
+        "type": "STOP_LOSS_LIMIT",
+        "quantity": size,
+        "stopPrice": stop_loss,
+        "price": stop_loss * (1 - stop_limit_slip_pct),
+        "timeInForce": "GTC",
+        "newClientOrderId": f"cts-{strategy}-stop-{uuid.uuid4().hex[:8]}",
     }
 
 
@@ -117,32 +143,45 @@ def place_protection(
     `mode="polling"` on persistent transient failures.
     """
     if is_ath:
-        # ATH branch implemented in the next task.
-        raise NotImplementedError("ATH stop-only path implemented in Task 4")
+        params = _build_stop_only_params(
+            pair, size, stop_loss, strategy, stop_limit_slip_pct,
+        )
+        endpoint = exchange.private_post_open_v1_orders
+        success_mode = "stop_only"
+    else:
+        params = _build_oco_params(
+            pair, size, stop_loss, target, strategy, stop_limit_slip_pct,
+        )
+        endpoint = exchange.privatePostOpenV1OrdersOco
+        success_mode = "oco"
 
-    params = _build_oco_params(pair, size, stop_loss, target, strategy,
-                               stop_limit_slip_pct)
-
-    last_exc = None
     for attempt in range(retry):
         try:
-            resp = exchange.privatePostOpenV1OrdersOco(params)
-            list_id = str(resp.get("orderListId") or resp.get("listClientOrderId"))
-            children = resp.get("orders", [])
-            if len(children) >= 2:
-                tp_id = str(children[0]["orderId"])
-                sl_id = str(children[1]["orderId"])
+            resp = endpoint(params)
+            if success_mode == "oco":
+                list_id = str(resp.get("orderListId") or resp.get("listClientOrderId"))
+                children = resp.get("orders", [])
+                if len(children) >= 2:
+                    # Tokocrypto/Binance-compatible OCO returns the limit
+                    # (TP) leg at index 0 and the stop-limit (SL) leg at
+                    # index 1. Tasks 6/7 rely on this ordering.
+                    tp_id = str(children[0]["orderId"])
+                    sl_id = str(children[1]["orderId"])
+                else:
+                    tp_id = sl_id = None
+                return ProtectionResult(
+                    mode="oco", order_id=list_id,
+                    child_ids=(tp_id, sl_id) if tp_id and sl_id else None,
+                )
             else:
-                tp_id = sl_id = None
-            return ProtectionResult(
-                mode="oco", order_id=list_id,
-                child_ids=(tp_id, sl_id) if tp_id and sl_id else None,
-            )
-        except Exception as exc:
+                return ProtectionResult(
+                    mode="stop_only",
+                    order_id=str(resp.get("orderId")),
+                )
+        except ccxt.BaseError as exc:
             if _is_permanent_error(exc):
                 return ProtectionResult(mode="error")
-            last_exc = exc
             if attempt < retry - 1:
-                time.sleep(backoff_seconds[attempt])
+                _sleep_backoff(backoff_seconds, attempt)
 
     return ProtectionResult(mode="polling")

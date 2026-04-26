@@ -5,9 +5,17 @@ TestDataclasses and TestSymbolHelper cover src/execution/protection.py.
 """
 import os
 import tempfile
+from unittest.mock import MagicMock
+
+import ccxt
 import pytest
 
 from src.data.database import get_connection, init_db
+from src.execution.protection import (
+    Active, ClosedWhileDown, FillResult, LostProtection,
+    Naked, ProtectionResult,
+    place_protection, tokocrypto_symbol,
+)
 
 
 @pytest.fixture
@@ -48,13 +56,6 @@ class TestSchema:
         assert rows[0]["protection_mode"] == "oco"
 
 
-from src.execution.protection import (
-    ProtectionResult, FillResult, LostProtection,
-    Active, ClosedWhileDown, Naked,
-    tokocrypto_symbol,
-)
-
-
 class TestDataclasses:
     def test_protection_result_defaults(self):
         r = ProtectionResult(mode="oco", order_id="abc",
@@ -92,12 +93,6 @@ class TestSymbolHelper:
     def test_lowercase_preserved(self):
         # Tokocrypto accepts uppercase; we don't try to normalize case.
         assert tokocrypto_symbol("btc/idr") == "btc_idr"
-
-
-from unittest.mock import MagicMock
-import ccxt
-
-from src.execution.protection import place_protection
 
 
 def _mock_exchange_oco_success(list_id="L1", tp_id="TP1", sl_id="SL1"):
@@ -203,3 +198,53 @@ class TestPlaceProtectionOCO:
         )
         assert r.mode == "error"
         assert ex.privatePostOpenV1OrdersOco.call_count == 1
+
+
+class TestPlaceProtectionStopOnly:
+    def test_stop_only_success(self):
+        ex = MagicMock()
+        ex.private_post_open_v1_orders.return_value = {
+            "orderId": "S1", "clientOrderId": "cts-darvas-stop-aaaa",
+            "type": "STOP_LOSS_LIMIT",
+        }
+        r = place_protection(
+            ex, "BTC/IDR", size=0.002,
+            stop_loss=950_000.0, target=None,
+            is_ath=True, strategy="darvas",
+        )
+        assert r.mode == "stop_only"
+        assert r.order_id == "S1"
+        assert r.child_ids is None
+        ex.private_post_open_v1_orders.assert_called_once()
+
+    def test_stop_only_param_shape(self):
+        ex = MagicMock()
+        ex.private_post_open_v1_orders.return_value = {"orderId": "S1"}
+        place_protection(
+            ex, "BTC/IDR", size=0.002,
+            stop_loss=1_000_000.0, target=None,
+            is_ath=True, strategy="darvas",
+            stop_limit_slip_pct=0.005,
+        )
+        call_args = ex.private_post_open_v1_orders.call_args
+        params = call_args[0][0] if call_args[0] else call_args[1]
+        assert params["symbol"] == "BTC_IDR"
+        assert params["side"] == "SELL"
+        assert params["type"] == "STOP_LOSS_LIMIT"
+        assert params["quantity"] == 0.002
+        assert params["stopPrice"] == 1_000_000.0
+        assert params["price"] == 1_000_000.0 * 0.995
+        assert params["timeInForce"] == "GTC"
+        assert params["newClientOrderId"].startswith("cts-darvas-stop-")
+
+    def test_stop_only_retries_then_polling(self):
+        ex = MagicMock()
+        ex.private_post_open_v1_orders.side_effect = ccxt.NetworkError("down")
+        r = place_protection(
+            ex, "BTC/IDR", size=0.001,
+            stop_loss=900_000.0, target=None,
+            is_ath=True, strategy="darvas",
+            backoff_seconds=[0, 0, 0],
+        )
+        assert r.mode == "polling"
+        assert ex.private_post_open_v1_orders.call_count == 3
