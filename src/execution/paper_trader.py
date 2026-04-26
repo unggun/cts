@@ -225,13 +225,14 @@ class PaperTrader:
         cur.execute("""
             INSERT INTO trade_journal
             (mode, pair, strategy, direction, entry_time, entry_price,
-             stop_loss, take_profit, position_size, features_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             stop_loss, take_profit, position_size, features_json,
+             protection_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             "paper", pair, self.strategy, "long",
             self.positions[pair]["entry_time"], levels["entry"],
             levels["stop_loss"], levels.get("target"), position_size,
-            json.dumps(features)
+            json.dumps(features), "simulated",
         ))
         conn.commit()
 

@@ -47,10 +47,12 @@ def print_positions(positions: list[dict]):
             print(f"  {'─' * 50}")
 
         target_str = f"{pos['take_profit']:,.0f}" if pos.get("take_profit") else "ATH trail"
+        prot = pos.get("protection_mode") or "—"
         print(f"  {pos['pair']:12s} | Entry: {pos['entry_price']:>14,.0f} | "
               f"SL: {pos['stop_loss']:>14,.0f} | Target: {target_str:>14s} | "
               f"Size: {pos['position_size']:.6f}")
-        print(f"  {'':12s} | Opened: {pos['entry_time'][:19]}")
+        print(f"  {'':12s} | Opened: {pos['entry_time'][:19]} | "
+              f"Protection: {prot}")
 
     print()
 

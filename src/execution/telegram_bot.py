@@ -226,11 +226,12 @@ class TelegramBot:
                 lines.append(f"\n📊 _{current_strategy.upper()}_")
 
             target = f"{r['take_profit']:,.0f}" if r.get("take_profit") else "ATH"
+            prot = r.get("protection_mode") or "—"
             lines.append(
                 f"  *{r['pair']}*\n"
                 f"    Entry: {r['entry_price']:,.0f}\n"
                 f"    SL: {r['stop_loss']:,.0f} | TP: {target}\n"
-                f"    Size: {r['position_size']:.6f}"
+                f"    Size: {r['position_size']:.6f} | Prot: `{prot}`"
             )
 
         lines.append(f"\n_Total: {len(rows)} position(s)_")
