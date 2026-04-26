@@ -10,7 +10,12 @@ from src.config import get_db_path
 
 
 def get_connection(db_path: str = None) -> sqlite3.Connection:
-    """Get a database connection with row factory."""
+    """Get a database connection with row factory.
+
+    Note: callers are responsible for calling .close() explicitly.
+    Using the returned connection in a `with` block manages
+    transactions only — it does NOT close the connection.
+    """
     if db_path is None:
         db_path = get_db_path()
     conn = sqlite3.connect(db_path, timeout=60)
