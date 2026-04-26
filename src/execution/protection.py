@@ -189,3 +189,31 @@ def place_protection(
                 _sleep_backoff(backoff_seconds, attempt)
 
     return ProtectionResult(mode="polling")
+
+
+def replace_trailing_stop(
+    exchange, pair: str, old_order_id: str,
+    new_stop: float, size: float, strategy: str,
+    stop_limit_slip_pct: float = 0.005,
+    backoff_seconds=(1, 2, 4),
+) -> ProtectionResult:
+    """Cancel the existing stop-loss-limit order and place a new one at
+    `new_stop`. If cancel fails, returns mode="kept" — caller must NOT
+    update its in-memory stop_loss because the old order is still active.
+    If cancel succeeds but the new placement fails after retries,
+    returns mode="polling" — position is now unprotected.
+    """
+    try:
+        exchange.cancel_order(old_order_id, pair)
+    except Exception:
+        # Cancel failed — old protection still on the book. Treat as
+        # transient; next ratchet cycle will retry.
+        return ProtectionResult(mode="kept")
+
+    return place_protection(
+        exchange, pair, size,
+        stop_loss=new_stop, target=None, is_ath=True,
+        strategy=strategy,
+        retry=3, backoff_seconds=backoff_seconds,
+        stop_limit_slip_pct=stop_limit_slip_pct,
+    )

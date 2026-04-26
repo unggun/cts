@@ -14,7 +14,7 @@ from src.data.database import get_connection, init_db
 from src.execution.protection import (
     Active, ClosedWhileDown, FillResult, LostProtection,
     Naked, ProtectionResult,
-    place_protection, tokocrypto_symbol,
+    place_protection, replace_trailing_stop, tokocrypto_symbol,
 )
 
 
@@ -275,3 +275,45 @@ class TestPlaceProtectionStopOnly:
         )
         assert r.mode == "stop_only"
         assert r.order_id is None
+
+
+class TestReplaceTrailingStop:
+    def test_cancel_then_place_success(self):
+        ex = MagicMock()
+        ex.cancel_order.return_value = {"id": "old", "status": "canceled"}
+        ex.private_post_open_v1_orders.return_value = {"orderId": "new1"}
+
+        r = replace_trailing_stop(
+            ex, "BTC/IDR", old_order_id="old",
+            new_stop=1_050_000.0, size=0.001, strategy="darvas",
+        )
+        assert r.mode == "stop_only"
+        assert r.order_id == "new1"
+        ex.cancel_order.assert_called_once_with("old", "BTC/IDR")
+        ex.private_post_open_v1_orders.assert_called_once()
+
+    def test_cancel_failure_returns_kept(self):
+        ex = MagicMock()
+        ex.cancel_order.side_effect = ccxt.OrderNotFound("gone")
+
+        r = replace_trailing_stop(
+            ex, "BTC/IDR", old_order_id="old",
+            new_stop=1_050_000.0, size=0.001, strategy="darvas",
+        )
+        assert r.mode == "kept"
+        # Place should NOT be attempted if cancel failed.
+        ex.private_post_open_v1_orders.assert_not_called()
+
+    def test_place_failure_returns_polling(self):
+        ex = MagicMock()
+        ex.cancel_order.return_value = {"id": "old", "status": "canceled"}
+        ex.private_post_open_v1_orders.side_effect = ccxt.NetworkError("down")
+
+        r = replace_trailing_stop(
+            ex, "BTC/IDR", old_order_id="old",
+            new_stop=1_050_000.0, size=0.001, strategy="darvas",
+            backoff_seconds=[0, 0, 0],
+        )
+        assert r.mode == "polling"
+        ex.cancel_order.assert_called_once()
+        assert ex.private_post_open_v1_orders.call_count == 3
