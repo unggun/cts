@@ -238,6 +238,18 @@ class TestPlaceProtectionOCO:
         assert r.mode == "polling"
         assert ex.privatePostOpenV1OrdersOco.call_count == 3
 
+    def test_oco_with_no_target_returns_error(self):
+        # Caller bug: non-ATH must have a target. Surface as mode='error'
+        # rather than crashing in _build_oco_params with price=None.
+        ex = MagicMock()
+        r = place_protection(
+            ex, "BTC/IDR", size=0.001,
+            stop_loss=900_000.0, target=None,  # bug
+            is_ath=False, strategy="darvas",
+        )
+        assert r.mode == "error"
+        ex.privatePostOpenV1OrdersOco.assert_not_called()
+
 
 class TestPlaceProtectionStopOnly:
     def test_stop_only_success(self):
@@ -397,6 +409,19 @@ class TestCheckProtectionFillStopOnly:
         ex.fetch_order.return_value = {
             "id": "S1", "status": "closed",
             # no average, no price
+            "lastTradeTimestamp": 1_700_000_000_000,
+        }
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert result is None
+
+    def test_filled_with_zero_price_returns_none(self):
+        # Defensive: a 0.0 average should be rejected as malformed,
+        # not propagate into PnL as a 100% loss.
+        ex = MagicMock()
+        ex.fetch_order.return_value = {
+            "id": "S1", "status": "closed",
+            "average": 0.0,
+            "price": 0.0,
             "lastTradeTimestamp": 1_700_000_000_000,
         }
         result = check_protection_fill(ex, "BTC/IDR", self._pos())

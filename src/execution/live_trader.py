@@ -469,6 +469,15 @@ class LiveTrader:
             if status in ("closed", "filled"):
                 filled_size = order.get("filled", size)
 
+                # ── Journal the entry FIRST with polling as safe default ──
+                # If we crash before place_protection completes, polling
+                # protection is the safe fallback. After successful
+                # placement we update the journal with the real mode/ids.
+                features_for_log = features
+                self._log_entry(conn, pair, filled_price, levels,
+                                filled_size, features_for_log,
+                                "polling", None, None)
+
                 # ── Place exchange-side protection ──
                 protection_cfg = self.config.get("risk", {}).get("protection", {})
                 if protection_cfg.get("enabled", True):
@@ -501,6 +510,16 @@ class LiveTrader:
                 else:
                     prot_result = prot.ProtectionResult(mode="polling")
 
+                # ── Update the journal row with real protection state ──
+                # (No-op if mode is still polling, but harmless.)
+                self._update_protection_state(
+                    conn, pair,
+                    prot_result.mode,
+                    prot_result.order_id,
+                    prot_result.child_ids,
+                )
+
+                # ── Build in-memory position last ──
                 self.positions[pair] = {
                     "entry_time": datetime.now().isoformat(),
                     "entry_price": filled_price,
@@ -526,13 +545,6 @@ class LiveTrader:
                     f"Size: {filled_size:.8f}\n"
                     f"Protection: {prot_result.mode}"
                 )
-
-                # Log to journal with protection info
-                self._log_entry(conn, pair, filled_price, levels,
-                                filled_size, features,
-                                prot_result.mode,
-                                prot_result.order_id,
-                                prot_result.child_ids)
 
             else:
                 # Cancel unfilled order

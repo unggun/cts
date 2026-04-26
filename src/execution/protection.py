@@ -145,6 +145,11 @@ def place_protection(
     to protect a long position. Retries transient errors, falls back to
     `mode="polling"` on persistent transient failures.
     """
+    if not is_ath and target is None:
+        # Caller bug: OCO requires both target and stop_loss. Surface it
+        # as mode="error" rather than crashing inside _build_oco_params
+        # with price=None.
+        return ProtectionResult(mode="error")
     if is_ath:
         params = _build_stop_only_params(
             pair, size, stop_loss, strategy, stop_limit_slip_pct,
@@ -234,15 +239,18 @@ def _ts_to_iso(ts_ms) -> str:
 
 def _safe_price(record) -> float | None:
     """Read average-then-price from a trade or order record, returning
-    None if neither is present. Avoids float(None) crashes on malformed
-    exchange responses."""
+    None if neither is present or if the value is non-positive. Avoids
+    float(None) crashes and 0.0 prices propagating into PnL math."""
     raw = record.get("average") if record.get("average") is not None else record.get("price")
     if raw is None:
         return None
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         return None
+    if value <= 0:
+        return None
+    return value
 
 
 def check_protection_fill(exchange, pair, position):
