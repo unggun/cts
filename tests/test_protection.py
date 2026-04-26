@@ -352,3 +352,98 @@ class TestCheckProtectionFillStopOnly:
         ex.fetch_order.return_value = {"id": "S1", "status": "canceled"}
         result = check_protection_fill(ex, "BTC/IDR", self._pos())
         assert isinstance(result, LostProtection)
+
+    def test_filled_with_missing_timestamp_returns_empty_time(self):
+        # If the exchange omits lastTradeTimestamp, _ts_to_iso must return
+        # an empty string rather than silently substituting wall-clock time.
+        ex = MagicMock()
+        ex.fetch_order.return_value = {
+            "id": "S1", "status": "closed",
+            "average": 950_000.0,
+            # no lastTradeTimestamp
+        }
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert isinstance(result, FillResult)
+        assert result.time == ""
+
+
+class TestCheckProtectionFillOCO:
+    def _pos(self):
+        return {
+            "protection_mode": "oco",
+            "protection_order_id": "L1",
+            "protection_child_ids": ("TP1", "SL1"),
+            "entry_time": "2026-04-26T10:00:00",
+        }
+
+    def test_both_children_open_returns_none(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = [
+            {"id": "TP1", "status": "open"},
+            {"id": "SL1", "status": "open"},
+        ]
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert result is None
+
+    def test_target_filled_returns_target_reason(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []  # neither child open
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell",
+                "order": "TP1",
+                "price": 1_200_000.0,
+                "average": 1_200_000.0,
+                "amount": 0.001,
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert isinstance(result, FillResult)
+        assert result.reason == "target"
+        assert result.price == 1_200_000.0
+
+    def test_stop_filled_returns_stop_loss_reason(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell",
+                "order": "SL1",
+                "price": 950_000.0,
+                "average": 950_000.0,
+                "amount": 0.001,
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert isinstance(result, FillResult)
+        assert result.reason == "stop_loss"
+
+    def test_one_child_open_one_gone_uses_trade_lookup(self):
+        # TP filled, SL auto-cancelled by OCO.
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = [
+            # SL was auto-cancelled, doesn't appear in open orders.
+        ]
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell",
+                "order": "TP1",
+                "average": 1_200_000.0,
+                "amount": 0.001,
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert isinstance(result, FillResult)
+        assert result.reason == "target"
+
+    def test_no_match_returns_none_to_avoid_double_fire(self):
+        # Edge: orders not in open list, but no matching trade either.
+        # Could happen with API lag. Return None and try again next loop.
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = []
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert result is None

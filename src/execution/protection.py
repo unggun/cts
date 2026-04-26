@@ -223,9 +223,12 @@ def replace_trailing_stop(
 # ─── Fill detection helpers ──────────────────────────────────
 
 def _ts_to_iso(ts_ms) -> str:
-    """Convert a Tokocrypto/CCXT millisecond timestamp to ISO string."""
+    """Convert a Tokocrypto/CCXT millisecond timestamp to ISO string.
+    Returns empty string when ts_ms is None — caller is responsible
+    for choosing a sensible default rather than us silently inserting
+    wall-clock time."""
     if ts_ms is None:
-        return datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat()
+        return ""
     return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).replace(tzinfo=None).isoformat()
 
 
@@ -260,4 +263,44 @@ def _check_stop_only_fill(exchange, pair, position):
 
 
 def _check_oco_fill(exchange, pair, position):
-    raise NotImplementedError("OCO fill detection — Task 7")
+    tp_id, sl_id = position["protection_child_ids"]
+
+    open_orders = exchange.fetch_open_orders(pair)
+    open_ids = {str(o.get("id")) for o in open_orders}
+    tp_open = tp_id in open_ids
+    sl_open = sl_id in open_ids
+
+    if tp_open and sl_open:
+        return None  # both legs still active
+
+    # At least one leg is gone. Look up which one filled via my_trades.
+    # Use a `since` slightly before entry_time to handle clock skew.
+    since_iso = position.get("entry_time")
+    since_ms = None
+    if since_iso:
+        try:
+            since_ms = int(datetime.fromisoformat(since_iso).timestamp() * 1000)
+        except (ValueError, TypeError):
+            since_ms = None
+
+    trades = exchange.fetch_my_trades(pair, since=since_ms, limit=20) or []
+    for trade in trades:
+        if trade.get("side", "").lower() != "sell":
+            continue
+        order_ref = str(trade.get("order") or "")
+        if order_ref == tp_id:
+            return FillResult(
+                price=float(trade.get("average") or trade.get("price")),
+                reason="target",
+                time=_ts_to_iso(trade.get("timestamp")),
+            )
+        if order_ref == sl_id:
+            return FillResult(
+                price=float(trade.get("average") or trade.get("price")),
+                reason="stop_loss",
+                time=_ts_to_iso(trade.get("timestamp")),
+            )
+
+    # Orders gone but no trade found yet — exchange API is lagging.
+    # Return None so we retry next loop instead of double-firing.
+    return None
