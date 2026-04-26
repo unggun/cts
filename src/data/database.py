@@ -161,6 +161,16 @@ def init_db(db_path: str = None):
     if "protection_mode" not in existing_cols:
         cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_mode TEXT")
 
+    # ── Migration: persist protection order IDs for restart reconciliation ──
+    # protection_order_id holds the OCO listClientOrderId or stop-only orderId.
+    # protection_child_ids holds JSON-serialized (TP_id, SL_id) for OCO; NULL otherwise.
+    cur.execute("PRAGMA table_info(trade_journal)")
+    existing_cols = {row["name"] for row in cur.fetchall()}
+    if "protection_order_id" not in existing_cols:
+        cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_order_id TEXT")
+    if "protection_child_ids" not in existing_cols:
+        cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_child_ids TEXT")
+
     conn.commit()
     conn.close()
     print(f"Database initialized at {db_path or get_db_path()}", file=sys.stderr)

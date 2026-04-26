@@ -28,6 +28,7 @@ from src.data.database import (
 from src.indicators.darvas import detect_darvas_boxes, calculate_trade_levels
 from src.indicators.dbw import detect_dbw, calculate_dbw_levels
 from src.indicators.features import extract_features
+from src.execution import protection as prot
 
 
 class LiveTrader:
@@ -342,17 +343,55 @@ class LiveTrader:
                 filled_price = order.get("average") or entry_price
 
             if status in ("closed", "filled"):
+                filled_size = order.get("filled", size)
+
+                # ── Place exchange-side protection ──
+                protection_cfg = self.config.get("risk", {}).get("protection", {})
+                if protection_cfg.get("enabled", True):
+                    prot_result = prot.place_protection(
+                        self.exchange, pair, filled_size,
+                        stop_loss=levels["stop_loss"],
+                        target=levels.get("target"),
+                        is_ath=levels.get("is_ath", False),
+                        strategy=self.strategy,
+                        retry=protection_cfg.get("retry_attempts", 3),
+                        backoff_seconds=protection_cfg.get(
+                            "retry_backoff_seconds", [1, 2, 4]
+                        ),
+                        stop_limit_slip_pct=protection_cfg.get(
+                            "stop_limit_slip_pct", 0.005
+                        ),
+                    )
+                    if prot_result.mode == "polling":
+                        self._notify(
+                            f"⚠️ {pair} protection placement failed — "
+                            "falling back to local polling"
+                        )
+                    elif prot_result.mode == "error":
+                        self._notify(
+                            f"🚨 {pair} protection placement returned "
+                            "permanent error — position is unprotected, "
+                            "manual intervention required"
+                        )
+                        prot_result = prot.ProtectionResult(mode="polling")
+                else:
+                    prot_result = prot.ProtectionResult(mode="polling")
+
                 self.positions[pair] = {
                     "entry_time": datetime.now().isoformat(),
                     "entry_price": filled_price,
                     "stop_loss": levels["stop_loss"],
                     "target": levels.get("target"),
-                    "position_size": order.get("filled", size),
+                    "position_size": filled_size,
                     "is_ath": levels.get("is_ath", False),
                     "order_id": order_id,
                     "features": features,
+                    "protection_mode": prot_result.mode,
+                    "protection_order_id": prot_result.order_id,
+                    "protection_child_ids": prot_result.child_ids,
                 }
-                print(f"     ✅ FILLED @ {filled_price:,.0f}")
+                print(f"     ✅ FILLED @ {filled_price:,.0f} "
+                      f"(protection: {prot_result.mode})")
 
                 target_str = f"{levels['target']:,.0f}" if levels.get("target") else "ATH trailing"
                 self._notify(
@@ -360,12 +399,16 @@ class LiveTrader:
                     f"Entry: {filled_price:,.0f}\n"
                     f"Stop loss: {levels['stop_loss']:,.0f}\n"
                     f"Target: {target_str}\n"
-                    f"Size: {order.get('filled', size):.8f}"
+                    f"Size: {filled_size:.8f}\n"
+                    f"Protection: {prot_result.mode}"
                 )
 
-                # Log to journal
+                # Log to journal with protection info
                 self._log_entry(conn, pair, filled_price, levels,
-                                order.get("filled", size), features)
+                                filled_size, features,
+                                prot_result.mode,
+                                prot_result.order_id,
+                                prot_result.child_ids)
 
             else:
                 # Cancel unfilled order
@@ -450,19 +493,24 @@ class LiveTrader:
             print(f"     ❌ Sell failed: {e}")
             self._notify(f"⚠️ SELL FAILED for {pair}: {e}")
 
-    def _log_entry(self, conn, pair, price, levels, size, features):
+    def _log_entry(self, conn, pair, price, levels, size, features,
+                   protection_mode, protection_order_id, protection_child_ids):
         """Log trade entry to journal."""
         cur = conn.cursor()
+        child_ids_json = (json.dumps(list(protection_child_ids))
+                          if protection_child_ids else None)
         cur.execute("""
             INSERT INTO trade_journal
             (mode, pair, strategy, direction, entry_time, entry_price,
-             stop_loss, take_profit, position_size, features_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             stop_loss, take_profit, position_size, features_json,
+             protection_mode, protection_order_id, protection_child_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             "live", pair, self.strategy, "long",
             datetime.now().isoformat(), price,
             levels["stop_loss"], levels.get("target"), size,
-            json.dumps(features)
+            json.dumps(features),
+            protection_mode, protection_order_id, child_ids_json,
         ))
         conn.commit()
 

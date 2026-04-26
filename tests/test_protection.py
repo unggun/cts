@@ -56,6 +56,30 @@ class TestSchema:
             rows = conn.execute("SELECT protection_mode FROM trade_journal").fetchall()
         assert rows[0]["protection_mode"] == "oco"
 
+    def test_trade_journal_has_protection_id_columns(self, tmp_db):
+        with get_connection(tmp_db) as conn:
+            cols = {row["name"] for row in
+                    conn.execute("PRAGMA table_info(trade_journal)").fetchall()}
+        assert "protection_order_id" in cols
+        assert "protection_child_ids" in cols
+
+    def test_can_insert_with_protection_ids(self, tmp_db):
+        with get_connection(tmp_db) as conn:
+            conn.execute("""
+                INSERT INTO trade_journal
+                (mode, pair, strategy, direction, entry_time, entry_price,
+                 protection_mode, protection_order_id, protection_child_ids)
+                VALUES ('live', 'BTC/IDR', 'darvas', 'long',
+                        '2026-04-26T10:00:00', 1000000, 'oco', 'L1',
+                        '["TP1", "SL1"]')
+            """)
+            conn.commit()
+            row = conn.execute(
+                "SELECT protection_order_id, protection_child_ids FROM trade_journal"
+            ).fetchone()
+        assert row["protection_order_id"] == "L1"
+        assert row["protection_child_ids"] == '["TP1", "SL1"]'
+
 
 class TestDataclasses:
     def test_protection_result_defaults(self):
