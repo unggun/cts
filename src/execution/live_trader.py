@@ -227,7 +227,12 @@ class LiveTrader:
 
         # ── Check exits ──
         if pair in self.positions:
-            self._check_exit(df, last_idx, pair, conn)
+            # Exchange-side protection check first (with trailing
+            # ratchet for ATH); falls through to candle-based polling
+            # if protection_mode is "polling" or unset.
+            closed = self._check_protection(pair, df, last_idx, conn)
+            if not closed and pair in self.positions:
+                self._check_exit(df, last_idx, pair, conn)
 
         # ── Check entries ──
         if pair not in self.positions:
@@ -237,8 +242,15 @@ class LiveTrader:
         conn.close()
 
     def _check_exit(self, df, idx, pair, conn):
-        """Check and execute exits."""
+        """Check and execute exits via candle-based polling. Used for
+        positions in protection_mode='polling' or legacy positions
+        without protection_mode set."""
         pos = self.positions[pair]
+        if pos.get("protection_mode") in ("oco", "stop_only"):
+            # Exchange-side protection is active; _check_protection
+            # handles fills. Don't double-trigger from candles.
+            return
+
         low = df.iloc[idx]["low"]
         high = df.iloc[idx]["high"]
 
@@ -252,7 +264,8 @@ class LiveTrader:
             exit_price = pos["target"]
             exit_reason = "target"
 
-        # ATH trailing stop
+        # ATH trailing stop (polling fallback only — the exchange-side
+        # ratchet is handled by _maybe_ratchet_trailing_stop)
         if pos.get("is_ath") and exit_price is None:
             from src.indicators.features import _atr
             atr = _atr(df["high"].values, df["low"].values, df["close"].values, 14)
@@ -262,6 +275,107 @@ class LiveTrader:
 
         if exit_price:
             self._execute_sell(pair, exit_price, exit_reason, conn)
+
+    def _check_protection(self, pair, df, idx, conn):
+        """For positions protected by exchange-side OCO/stop, check if
+        the protective order has filled or been cancelled. For ATH
+        stop-only positions, also handle the trailing-stop ratchet.
+
+        Returns True if the position was closed (caller should NOT also
+        run _check_exit for this pair). Returns False if the position
+        is still open OR if it falls back to polling.
+        """
+        pos = self.positions.get(pair)
+        if not pos:
+            return False
+        mode = pos.get("protection_mode")
+        if mode not in ("oco", "stop_only"):
+            return False
+
+        try:
+            result = prot.check_protection_fill(self.exchange, pair, pos)
+        except Exception as e:
+            print(f"  Error checking protection for {pair}: {e}")
+            return False
+
+        if isinstance(result, prot.LostProtection):
+            print(f"  ⚠️ {pair} protection lost — falling back to polling")
+            self._notify(f"⚠️ {pair} protection cancelled externally — polling fallback")
+            pos["protection_mode"] = "polling"
+            pos["protection_order_id"] = None
+            pos["protection_child_ids"] = None
+            return False
+
+        if result is None:
+            # Still active and unfilled. For ATH stop-only, check whether
+            # we should ratchet the trailing stop up.
+            if mode == "stop_only" and pos.get("is_ath"):
+                self._maybe_ratchet_trailing_stop(pair, pos, df, idx)
+            return False
+
+        # FillResult: exchange already executed the sell. Close locally.
+        pnl_per_unit = result.price - pos["entry_price"]
+        pnl_absolute = pnl_per_unit * pos["position_size"]
+        pnl_pct = pnl_per_unit / pos["entry_price"]
+        self.daily_pnl += pnl_absolute
+        self.trade_count_today += 1
+
+        emoji = "✅" if pnl_pct > 0 else "❌"
+        print(f"\n  {emoji} {pair} CLOSED via {result.reason} "
+              f"@ {result.price:,.0f} | PnL: {pnl_pct:+.2%} "
+              f"({pnl_absolute:+,.0f} IDR)")
+
+        self._notify(
+            f"{emoji} *SELL {pair}* ({result.reason})\n"
+            f"Exit: {result.price:,.0f}\n"
+            f"PnL: {pnl_pct:+.2%} ({pnl_absolute:+,.0f} IDR)"
+        )
+
+        self._log_exit(conn, pair, result.price, result.reason,
+                       pnl_pct, pnl_absolute, pos)
+        del self.positions[pair]
+        return True
+
+    def _maybe_ratchet_trailing_stop(self, pair, pos, df, idx):
+        """For ATH stop-only positions: compute new trailing stop from
+        recent candles. If it's higher than the current stop by at least
+        min_trail_ratchet_pct, cancel-and-replace the exchange order."""
+        from src.indicators.features import _atr
+
+        protection_cfg = self.config.get("risk", {}).get("protection", {})
+        min_ratchet = protection_cfg.get("min_trail_ratchet_pct", 0.005)
+
+        atr = _atr(df["high"].values, df["low"].values,
+                   df["close"].values, 14)
+        high = df.iloc[idx]["high"]
+        new_trail = high - 2 * atr
+
+        ratchet_threshold = pos["stop_loss"] * (1 + min_ratchet)
+        if new_trail <= ratchet_threshold:
+            return  # not enough movement to bother
+
+        result = prot.replace_trailing_stop(
+            self.exchange, pair,
+            old_order_id=pos["protection_order_id"],
+            new_stop=new_trail,
+            size=pos["position_size"],
+            strategy=self.strategy,
+            stop_limit_slip_pct=protection_cfg.get("stop_limit_slip_pct", 0.005),
+        )
+
+        if result.mode == "polling":
+            # cancel succeeded but new placement failed → fall through
+            print(f"  ⚠️ {pair} trail replace failed — polling fallback")
+            self._notify(f"⚠️ {pair} trail replace failed — polling fallback")
+            pos["protection_mode"] = "polling"
+            pos["protection_order_id"] = None
+        elif result.mode == "kept":
+            # cancel failed; old order still active. Don't change in-memory state.
+            pass
+        else:  # "stop_only" success
+            pos["stop_loss"] = new_trail
+            pos["protection_order_id"] = result.order_id
+            print(f"  ↗ {pair} trailing stop ratcheted to {new_trail:,.0f}")
 
     def _try_entry(self, df, idx, pair, conn):
         """Evaluate and execute entry."""
