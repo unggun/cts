@@ -10,6 +10,7 @@ See docs/superpowers/specs/2026-04-26-tokocrypto-oco-protection-design.md
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import ccxt
@@ -217,3 +218,46 @@ def replace_trailing_stop(
         retry=3, backoff_seconds=backoff_seconds,
         stop_limit_slip_pct=stop_limit_slip_pct,
     )
+
+
+# ─── Fill detection helpers ──────────────────────────────────
+
+def _ts_to_iso(ts_ms) -> str:
+    """Convert a Tokocrypto/CCXT millisecond timestamp to ISO string."""
+    if ts_ms is None:
+        return datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat()
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).replace(tzinfo=None).isoformat()
+
+
+def check_protection_fill(exchange, pair, position):
+    """Per-loop check: has the protective order filled, gone missing, or
+    is it still active? Returns FillResult, LostProtection, or None."""
+    mode = position.get("protection_mode")
+    if mode == "stop_only":
+        return _check_stop_only_fill(exchange, pair, position)
+    elif mode == "oco":
+        return _check_oco_fill(exchange, pair, position)
+    else:
+        return None  # polling positions are handled by _check_exit
+
+
+def _check_stop_only_fill(exchange, pair, position):
+    order_id = position["protection_order_id"]
+    order = exchange.fetch_order(order_id, pair)
+    status = order.get("status")
+    if status == "open":
+        return None
+    if status in ("closed", "filled"):
+        return FillResult(
+            price=float(order.get("average") or order.get("price")),
+            reason="stop_loss",
+            time=_ts_to_iso(order.get("lastTradeTimestamp")),
+        )
+    if status == "canceled":
+        return LostProtection()
+    # Unknown status — treat as still-active to avoid double-firing.
+    return None
+
+
+def _check_oco_fill(exchange, pair, position):
+    raise NotImplementedError("OCO fill detection — Task 7")

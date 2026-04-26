@@ -15,6 +15,7 @@ from src.execution.protection import (
     Active, ClosedWhileDown, FillResult, LostProtection,
     Naked, ProtectionResult,
     place_protection, replace_trailing_stop, tokocrypto_symbol,
+    check_protection_fill,
 )
 
 
@@ -317,3 +318,37 @@ class TestReplaceTrailingStop:
         assert r.mode == "polling"
         ex.cancel_order.assert_called_once()
         assert ex.private_post_open_v1_orders.call_count == 3
+
+
+class TestCheckProtectionFillStopOnly:
+    def _pos(self, order_id="S1"):
+        return {
+            "protection_mode": "stop_only",
+            "protection_order_id": order_id,
+            "protection_child_ids": None,
+            "entry_time": "2026-04-26T10:00:00",
+        }
+
+    def test_open_returns_none(self):
+        ex = MagicMock()
+        ex.fetch_order.return_value = {"id": "S1", "status": "open"}
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert result is None
+
+    def test_filled_returns_fill_result(self):
+        ex = MagicMock()
+        ex.fetch_order.return_value = {
+            "id": "S1", "status": "closed",
+            "average": 950_000.0,
+            "lastTradeTimestamp": 1_700_000_000_000,
+        }
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert isinstance(result, FillResult)
+        assert result.price == 950_000.0
+        assert result.reason == "stop_loss"
+
+    def test_canceled_returns_lost_protection(self):
+        ex = MagicMock()
+        ex.fetch_order.return_value = {"id": "S1", "status": "canceled"}
+        result = check_protection_fill(ex, "BTC/IDR", self._pos())
+        assert isinstance(result, LostProtection)
