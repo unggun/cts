@@ -85,8 +85,10 @@ def tokocrypto_symbol(ccxt_pair: str) -> str:
 
 
 def _sleep_backoff(backoff_seconds, attempt: int) -> None:
-    """Sleep based on the attempt index, clamped to the last entry
-    if the attempt exceeds the backoff list length."""
+    """Sleep based on the attempt index, clamped to the last entry of
+    backoff_seconds. Empty backoff_seconds means no sleep."""
+    if not backoff_seconds:
+        return
     idx = min(attempt, len(backoff_seconds) - 1)
     time.sleep(backoff_seconds[idx])
 
@@ -159,7 +161,8 @@ def place_protection(
         try:
             resp = endpoint(params)
             if success_mode == "oco":
-                list_id = str(resp.get("orderListId") or resp.get("listClientOrderId"))
+                list_id_raw = resp.get("orderListId") or resp.get("listClientOrderId")
+                list_id = str(list_id_raw) if list_id_raw is not None else None
                 children = resp.get("orders", [])
                 if len(children) >= 2:
                     # Tokocrypto/Binance-compatible OCO returns the limit
@@ -174,9 +177,10 @@ def place_protection(
                     child_ids=(tp_id, sl_id) if tp_id and sl_id else None,
                 )
             else:
+                order_id_raw = resp.get("orderId")
                 return ProtectionResult(
                     mode="stop_only",
-                    order_id=str(resp.get("orderId")),
+                    order_id=str(order_id_raw) if order_id_raw is not None else None,
                 )
         except ccxt.BaseError as exc:
             if _is_permanent_error(exc):

@@ -199,6 +199,20 @@ class TestPlaceProtectionOCO:
         assert r.mode == "error"
         assert ex.privatePostOpenV1OrdersOco.call_count == 1
 
+    def test_oco_with_empty_backoff_does_not_crash(self):
+        # Empty backoff_seconds should be treated as "no sleep" rather
+        # than raising IndexError.
+        ex = MagicMock()
+        ex.privatePostOpenV1OrdersOco.side_effect = ccxt.NetworkError("down")
+        r = place_protection(
+            ex, "BTC/IDR", size=0.001,
+            stop_loss=900_000.0, target=1_100_000.0,
+            is_ath=False, strategy="darvas",
+            backoff_seconds=[],
+        )
+        assert r.mode == "polling"
+        assert ex.privatePostOpenV1OrdersOco.call_count == 3
+
 
 class TestPlaceProtectionStopOnly:
     def test_stop_only_success(self):
@@ -248,3 +262,16 @@ class TestPlaceProtectionStopOnly:
         )
         assert r.mode == "polling"
         assert ex.private_post_open_v1_orders.call_count == 3
+
+    def test_stop_only_returns_none_order_id_when_response_missing_id(self):
+        # Defensive: if the exchange somehow returns a response without
+        # orderId, we must return order_id=None, not the string "None".
+        ex = MagicMock()
+        ex.private_post_open_v1_orders.return_value = {}  # no orderId
+        r = place_protection(
+            ex, "BTC/IDR", size=0.001,
+            stop_loss=900_000.0, target=None,
+            is_ath=True, strategy="darvas",
+        )
+        assert r.mode == "stop_only"
+        assert r.order_id is None
