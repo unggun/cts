@@ -149,6 +149,13 @@ def init_db(db_path: str = None):
         )
     """)
 
+    # ── Migration: add protection_mode column if missing ──
+    # Used by src/execution/live_trader.py to track exchange-side protection state.
+    cur.execute("PRAGMA table_info(trade_journal)")
+    existing_cols = {row["name"] for row in cur.fetchall()}
+    if "protection_mode" not in existing_cols:
+        cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_mode TEXT")
+
     conn.commit()
     conn.close()
     print(f"Database initialized at {db_path or get_db_path()}", file=sys.stderr)
