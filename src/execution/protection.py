@@ -330,3 +330,75 @@ def _check_oco_fill(exchange, pair, position):
     # Orders gone but no trade found yet — exchange API is lagging.
     # Return None so we retry next loop instead of double-firing.
     return None
+
+
+# ─── Restart reconciliation ──────────────────────────────────
+
+def reconcile_on_restart(exchange, pair, position):
+    """On bot restart, determine the state of an exchange-protected
+    position. Returns Active, ClosedWhileDown, or Naked.
+
+    Three-way decision:
+      Active           — protection still on the book; bot adopts it.
+      ClosedWhileDown  — protection fired while bot was down; trader
+                         closes the position in DB with the real exit.
+      Naked            — protection is gone but no exit trade found;
+                         trader must re-place protection.
+    """
+    mode = position.get("protection_mode")
+    target_ids = []
+    if mode == "stop_only":
+        target_ids = [position["protection_order_id"]]
+    elif mode == "oco":
+        target_ids = list(position["protection_child_ids"])
+    else:
+        return Naked()
+
+    # 1. Check open orders.
+    open_orders = exchange.fetch_open_orders(pair) or []
+    open_ids = {str(o.get("id")) for o in open_orders}
+    if mode == "stop_only" and target_ids[0] in open_ids:
+        return Active(order_id=target_ids[0], child_ids=None)
+    if mode == "oco" and all(t in open_ids for t in target_ids):
+        return Active(
+            order_id=position["protection_order_id"],
+            child_ids=tuple(target_ids),
+        )
+
+    # 2. Check trade history.
+    since_iso = position.get("entry_time")
+    since_ms = None
+    if since_iso:
+        try:
+            since_ms = int(datetime.fromisoformat(since_iso).timestamp() * 1000) - 5000
+        except (ValueError, TypeError):
+            since_ms = None
+
+    trades = exchange.fetch_my_trades(pair, since=since_ms, limit=50) or []
+    expected_size = float(position.get("position_size") or 0)
+
+    for trade in trades:
+        if trade.get("side", "").lower() != "sell":
+            continue
+        order_ref = str(trade.get("order") or "")
+        if order_ref not in target_ids:
+            continue
+        # Tolerance: fees can shave the amount by a small fraction.
+        amount = float(trade.get("amount") or 0)
+        if expected_size > 0 and abs(amount - expected_size) / expected_size > 0.01:
+            continue
+        if mode == "stop_only":
+            reason = "stop_loss"
+        else:
+            tp_id, sl_id = target_ids
+            reason = "target" if order_ref == tp_id else "stop_loss"
+        price = _safe_price(trade)
+        if price is None:
+            continue
+        return ClosedWhileDown(
+            price=price,
+            reason=reason,
+            time=_ts_to_iso(trade.get("timestamp")),
+        )
+
+    return Naked()

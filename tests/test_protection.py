@@ -15,7 +15,7 @@ from src.execution.protection import (
     Active, ClosedWhileDown, FillResult, LostProtection,
     Naked, ProtectionResult,
     place_protection, replace_trailing_stop, tokocrypto_symbol,
-    check_protection_fill,
+    check_protection_fill, reconcile_on_restart,
 )
 
 
@@ -464,3 +464,107 @@ class TestCheckProtectionFillOCO:
         ex.fetch_my_trades.return_value = []
         result = check_protection_fill(ex, "BTC/IDR", self._pos())
         assert result is None
+
+
+class TestReconcileOnRestart:
+    def _stop_only_pos(self):
+        return {
+            "protection_mode": "stop_only",
+            "protection_order_id": "S1",
+            "protection_child_ids": None,
+            "entry_time": "2026-04-26T10:00:00",
+            "position_size": 0.001,
+        }
+
+    def _oco_pos(self):
+        return {
+            "protection_mode": "oco",
+            "protection_order_id": "L1",
+            "protection_child_ids": ("TP1", "SL1"),
+            "entry_time": "2026-04-26T10:00:00",
+            "position_size": 0.001,
+        }
+
+    def test_active_stop_only(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = [{"id": "S1", "status": "open"}]
+        result = reconcile_on_restart(ex, "BTC/IDR", self._stop_only_pos())
+        assert isinstance(result, Active)
+        assert result.order_id == "S1"
+        assert result.child_ids is None
+
+    def test_active_oco(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = [
+            {"id": "TP1", "status": "open"},
+            {"id": "SL1", "status": "open"},
+        ]
+        result = reconcile_on_restart(ex, "BTC/IDR", self._oco_pos())
+        assert isinstance(result, Active)
+        assert result.order_id == "L1"
+        assert result.child_ids == ("TP1", "SL1")
+
+    def test_closed_while_down_oco_target(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell", "order": "TP1",
+                "average": 1_200_000.0, "amount": 0.001,
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = reconcile_on_restart(ex, "BTC/IDR", self._oco_pos())
+        assert isinstance(result, ClosedWhileDown)
+        assert result.reason == "target"
+        assert result.price == 1_200_000.0
+
+    def test_closed_while_down_stop_only(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell", "order": "S1",
+                "average": 950_000.0, "amount": 0.001,
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = reconcile_on_restart(ex, "BTC/IDR", self._stop_only_pos())
+        assert isinstance(result, ClosedWhileDown)
+        assert result.reason == "stop_loss"
+        assert result.price == 950_000.0
+
+    def test_naked_no_orders_no_trades(self):
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = []
+        result = reconcile_on_restart(ex, "BTC/IDR", self._stop_only_pos())
+        assert isinstance(result, Naked)
+
+    def test_amount_tolerance_within_1pct(self):
+        # Trade amount slightly less than position size due to fees.
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell", "order": "S1",
+                "average": 950_000.0, "amount": 0.000999,  # 0.1% short
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = reconcile_on_restart(ex, "BTC/IDR", self._stop_only_pos())
+        assert isinstance(result, ClosedWhileDown)
+
+    def test_amount_mismatch_beyond_tolerance_returns_naked(self):
+        # Trade amount more than 1% off — different trade, not ours.
+        ex = MagicMock()
+        ex.fetch_open_orders.return_value = []
+        ex.fetch_my_trades.return_value = [
+            {
+                "side": "sell", "order": "S1",
+                "average": 950_000.0, "amount": 0.0005,  # 50% short
+                "timestamp": 1_700_000_000_000,
+            }
+        ]
+        result = reconcile_on_restart(ex, "BTC/IDR", self._stop_only_pos())
+        assert isinstance(result, Naked)
