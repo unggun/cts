@@ -27,10 +27,6 @@ def rule_search_config(config: dict) -> dict:
     return cfg
 
 
-def _fmt(x):
-    return float(f"{x:.6g}") if isinstance(x, (float, np.floating)) else x
-
-
 def _candidates(values: pd.Series, cfg: dict):
     """(operator, threshold, skip_mask) for one feature over the current trades."""
     present = values.dropna()
@@ -38,10 +34,13 @@ def _candidates(values: pd.Series, cfg: dict):
         return
     numeric = pd.api.types.is_numeric_dtype(present) and not pd.api.types.is_bool_dtype(present)
     if numeric:
-        thresholds = sorted(set(np.round(present.quantile(QUANTILES).to_numpy(), 10)))
+        # Keep full precision: the threshold is stored as text and parsed back
+        # exactly, so the evidence here and the live rule (apply_filters) test
+        # the same predicate. Rounding could move a cutoff past the data.
+        thresholds = sorted({float(t) for t in present.quantile(QUANTILES).to_numpy()})
         for thr in thresholds:
-            yield ">=", _fmt(thr), (values >= thr).fillna(False).to_numpy()
-            yield "<=", _fmt(thr), (values <= thr).fillna(False).to_numpy()
+            yield ">=", thr, (values >= thr).fillna(False).to_numpy()
+            yield "<=", thr, (values <= thr).fillna(False).to_numpy()
     else:
         cats = present.astype(str).unique()
         if len(cats) > cfg["max_categories"]:
