@@ -2,7 +2,8 @@ data/trading.db
 config.yaml
 __pycache__/
 *.pyc
-.DS_Storedata/trading.db-wal
+.DS_Store
+data/trading.db-wal
 data/trading.db-shm
 venv/
 config.yaml.save
