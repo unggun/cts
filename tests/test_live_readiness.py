@@ -111,7 +111,24 @@ def test_load_param_cutover_none_when_missing(tmp_db):
     assert lr.load_param_cutover("dbw", db_path=tmp_db) is None
 
 
-def test_load_paper_stats_splits_around_cutover(tmp_db):
+@pytest.fixture
+def april_19(monkeypatch):
+    """Freeze "now" to 2026-04-19 so fixed April trades stay inside the 30-day window."""
+    original_dt = datetime
+
+    class FakeDT:
+        @classmethod
+        def now(cls, tz=None):
+            return original_dt(2026, 4, 19, 12, 0, 0, tzinfo=tz)
+
+        # Preserve fromisoformat for _parse_ts
+        @staticmethod
+        def fromisoformat(s):
+            return original_dt.fromisoformat(s)
+    monkeypatch.setattr(lr, "datetime", FakeDT)
+
+
+def test_load_paper_stats_splits_around_cutover(tmp_db, april_19):
     cutover = "2026-04-18 22:00:00"
     # Pre-update: 2 closed, 1 win
     _insert_paper_trade(tmp_db, "dbw", "2026-04-15 10:00:00", 0.05)
@@ -132,7 +149,7 @@ def test_load_paper_stats_splits_around_cutover(tmp_db):
     assert stats["current"]["total_pnl_pct"] == pytest.approx(0.06)
 
 
-def test_load_paper_stats_no_cutover_everything_current(tmp_db):
+def test_load_paper_stats_no_cutover_everything_current(tmp_db, april_19):
     _insert_paper_trade(tmp_db, "dbw", "2026-04-19 10:00:00", 0.03)
     stats = lr.load_paper_stats("dbw", None, db_path=tmp_db)
     assert stats["current"]["closed"] == 1
@@ -146,26 +163,14 @@ def test_load_paper_stats_ignores_open_trades(tmp_db):
     assert stats["current"]["win_rate"] is None
 
 
-def test_load_paper_stats_excludes_trades_older_than_30_days(tmp_db, monkeypatch):
-    # Freeze "now" to 2026-04-19
-    original_dt = datetime
-    class FakeDT:
-        @classmethod
-        def now(cls, tz=None):
-            return original_dt(2026, 4, 19, 0, 0, 0, tzinfo=tz)
-
-        # Preserve fromisoformat for _parse_ts
-        @staticmethod
-        def fromisoformat(s):
-            return original_dt.fromisoformat(s)
-    monkeypatch.setattr(lr, "datetime", FakeDT)
+def test_load_paper_stats_excludes_trades_older_than_30_days(tmp_db, april_19):
     _insert_paper_trade(tmp_db, "dbw", "2026-03-01 10:00:00", 0.05)  # ~49 days old
     _insert_paper_trade(tmp_db, "dbw", "2026-04-18 10:00:00", 0.05)  # 1 day old
     stats = lr.load_paper_stats("dbw", None, db_path=tmp_db)
     assert stats["current"]["closed"] == 1
 
 
-def test_load_paper_stats_handles_mixed_timestamp_formats(tmp_db):
+def test_load_paper_stats_handles_mixed_timestamp_formats(tmp_db, april_19):
     """entry_time is ISO-T format (from paper_trader); cutover is space format (from SQLite default).
     Comparison must be datetime-based, not lexicographic."""
     cutover_space = "2026-04-18 22:01:17"

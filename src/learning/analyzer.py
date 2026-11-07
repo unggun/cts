@@ -118,30 +118,6 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
 
         findings["feature_analysis"][col] = analysis
 
-        # Generate filter suggestions for strong effects
-        if abs(effect_size) > 0.3:
-            direction = "higher" if effect_size > 0 else "lower"
-            if effect_size > 0.3:
-                # Winners have higher values — skip when feature is on the loser side
-                # (<= midpoint between winner and loser means)
-                threshold = l_mean + 0.5 * (w_mean - l_mean)
-                findings["suggested_filters"].append({
-                    "feature": col,
-                    "rule": f"{col} <= {threshold:.4f}",
-                    "effect_size": round(effect_size, 3),
-                    "rationale": f"Winners avg {w_mean:.4f} vs losers {l_mean:.4f} ({direction} is better)",
-                })
-            elif effect_size < -0.3:
-                # Winners have lower values — skip when feature is on the loser side
-                # (>= midpoint between winner and loser means)
-                threshold = w_mean + 0.5 * (l_mean - w_mean)
-                findings["suggested_filters"].append({
-                    "feature": col,
-                    "rule": f"{col} >= {threshold:.4f}",
-                    "effect_size": round(effect_size, 3),
-                    "rationale": f"Winners avg {w_mean:.4f} vs losers {l_mean:.4f} ({direction} is better)",
-                })
-
     # Analyze categorical features (exclude exit_reason — it's a post-hoc
     # label determined after trade closes, not available at entry time)
     for col in ["rsi_zone", "session"]:
@@ -159,21 +135,24 @@ def analyze_winners_vs_losers(run_id: str = None, strategy: str = None,
             win_rate = cross.loc[val, 1]
             edge = win_rate - overall_win_rate
 
-            if abs(edge) > 0.10:  # 10%+ edge
-                if edge < -0.10:
-                    findings["suggested_filters"].append({
-                        "feature": col,
-                        "rule": f"Skip when {col} == '{val}'",
-                        "effect_size": round(edge, 3),
-                        "rationale": f"{val}: {win_rate:.1%} win rate vs {overall_win_rate:.1%} overall ({count} trades)",
-                    })
-                    findings["warnings"].append(
-                        f"⚠️ {col}='{val}': {win_rate:.1%} win rate ({count} trades) — "
-                        f"significantly below overall {overall_win_rate:.1%}"
-                    )
+            if edge < -0.10:  # 10%+ worse than overall
+                findings["warnings"].append(
+                    f"⚠️ {col}='{val}': {win_rate:.1%} win rate ({count} trades) — "
+                    f"significantly below overall {overall_win_rate:.1%}"
+                )
 
-    # Sort filters by absolute effect size
-    findings["suggested_filters"].sort(key=lambda x: abs(x["effect_size"]), reverse=True)
+    # Skip rules, judged by what they remove (expectancy after costs), not by
+    # how far apart winner and loser means are. See rule_search.py.
+    from src.config import load_config
+    from src.learning.filter_rules import _configured_filter_limit
+    from src.learning.rule_search import rule_search_config, search_rules
+    feature_cols = [c for c in feat_df.columns if c not in skip_cols]
+    findings["suggested_filters"] = search_rules(
+        feat_df[feature_cols], feat_df["pnl_pct"].to_numpy(),
+        limit=_configured_filter_limit(),
+        cfg=rule_search_config(load_config()),
+        effect_sizes={k: v["effect_size"] for k, v in findings["feature_analysis"].items()},
+    )
 
     return findings
 
