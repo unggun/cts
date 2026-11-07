@@ -231,7 +231,9 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
             "filter_rules": ev.get("candidate_filters", []) if evaluated
             else [f.get("rule", "") for f in rec.get("filter_rules", [])],
             "evaluated": evaluated,
-            "promoted": bool(ev.get("promoted")),
+            # Whether Claude's proposal won; a no-filters promotion isn't its win.
+            "promoted": bool(ev.get("promoted")) and not ev.get("filters_removed"),
+            "filters_removed": bool(ev.get("promoted") and ev.get("filters_removed")),
             "reason": ev.get("reason", ""),
             "incumbent": ev.get("incumbent", {}),
             "candidate": ev.get("candidate", {}),
@@ -311,21 +313,38 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
         "candidate": candidate,
         "candidate_filters": [f"{f['feature']} {f['operator']} {f['threshold']}"
                               for f in cand_filters],
-        "promoted": promote and not dry_run,
-        "would_promote": promote,
-        "reason": reason,
     }
+
+    # The proposal lost. Old filters can starve a strategy so badly that no
+    # proposal wins on its few trades; try the current params with no filters
+    # under the same rule (unless that is exactly what was just tested).
+    save_params, save_filters, saved = cand_params, cand_filters, candidate
+    source, notes = "claude_auto_review", json.dumps(review.get("key_insights", []))
+    already_tested = not failure and not bundle_changed(inc_params, [], cand_params, cand_filters)
+    if not promote and inc_filters and not already_tested:
+        no_filters = evaluate_bundle(strategy, dict(inc_params, risk=risk), [], dfs,
+                                     timeframe, trade_start, costs, capital, btc_df=btc_df)
+        evaluation["no_filters"] = no_filters
+        ok, why = decide(incumbent, no_filters, cfg, changed=True)
+        if ok:
+            promote, reason = True, f"all filters removed: {why} (proposal rejected: {reason})"
+            evaluation["filters_removed"] = True
+            save_params, save_filters, saved = inc_params, [], no_filters
+            source, notes = "no_filter_fallback", json.dumps(["all filters removed"])
+
+    evaluation.update({"promoted": promote and not dry_run, "would_promote": promote,
+                       "reason": reason})
     if promote and not dry_run:
         # One transaction: paper traders must never see the new params with the
         # old filters (or the reverse), and a crash must not leave half a bundle.
         conn = get_connection()
         try:
             version = save_parameters(
-                conn, strategy, cand_params, source="claude_auto_review",
-                performance={"holdout": candidate, "win_rate": candidate["win_rate"]},
-                notes=json.dumps(review.get("key_insights", [])), commit=False,
+                conn, strategy, save_params, source=source,
+                performance={"holdout": saved, "win_rate": saved["win_rate"]},
+                notes=notes, commit=False,
             )
-            replace_active_filters(strategy, cand_filters, conn=conn, commit=False)
+            replace_active_filters(strategy, save_filters, conn=conn, commit=False)
             conn.commit()
         except Exception:
             conn.rollback()
