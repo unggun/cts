@@ -152,6 +152,12 @@ risk:
     retry_attempts: 3
     retry_backoff_seconds: [1, 2, 4]
 
+costs:
+  # Per-side trading costs applied in backtests and paper trading.
+  # Check your Tokocrypto fee tier and adjust.
+  fee_pct: 0.001        # 0.10% per buy and per sell
+  slippage_pct: 0.0005  # 0.05% adverse fill per side
+
 simulation:
   # Monte Carlo settings
   num_paths: 10000
@@ -161,9 +167,11 @@ simulation:
 learning:
   # Claude API for auto-analysis
   claude_api_key: "YOUR_CLAUDE_API_KEY"
-  claude_model: "claude-sonnet-4-20250514"
+  claude_model: "claude-sonnet-5-5"
   # How many trades minimum before running analysis
   min_trades_for_analysis: 30
+  # Max skip filters applied per strategy (strongest first, one per feature)
+  max_filter_rules: 3
   # Analysis schedule (used by n8n/cron)
   analysis_interval_hours: 168  # Weekly
   # Quality gates — block parameter updates if backtest fails these

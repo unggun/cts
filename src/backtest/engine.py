@@ -18,6 +18,8 @@ from src.indicators.macd import detect_macd, calculate_macd_levels
 from src.indicators.mean_reversion import detect_mean_reversion, calculate_mean_reversion_levels
 from src.indicators.bb_squeeze import detect_bb_squeeze, calculate_bb_squeeze_levels
 from src.indicators.features import extract_features
+from src.backtest.costs import net_pnl, trading_costs
+from src.backtest.exits import trail_stop
 from src.data.database import get_connection, save_backtest_trades, load_ohlcv
 from src.learning.filter_rules import load_active_filters, apply_filters
 
@@ -41,14 +43,16 @@ STRATEGY_REGISTRY = {
 class BacktestEngine:
     """Run a trading strategy against historical OHLCV data."""
 
-    def __init__(self, strategy: str, params: dict, initial_capital: float = 10_000_000):
+    def __init__(self, strategy: str, params: dict, initial_capital: float = 10_000_000,
+                 costs: dict = None, use_filters: bool = True):
         self.strategy = strategy
         self.params = params
         self.initial_capital = initial_capital
+        self.costs = costs if costs is not None else trading_costs()
         self.run_id = f"{strategy}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
         # Load active filter rules
-        self.filters = load_active_filters(strategy)
+        self.filters = load_active_filters(strategy) if use_filters else []
         self.filtered_count = 0
         self.signal_count = 0
         self.rr_rejected_count = 0
@@ -190,10 +194,8 @@ class BacktestEngine:
         trail_mult = strategy_params.get("trailing_atr_multiplier", 3.0)
 
         # Only activate trailing stop once trade has moved 1x ATR in our favor
-        if pos["highest_high"] > pos["entry_price"] + atr:
-            trailing_stop = pos["highest_high"] - (trail_mult * atr)
-            if trailing_stop > pos["stop_loss"]:
-                pos["stop_loss"] = trailing_stop
+        pos["stop_loss"] = trail_stop(pos["entry_price"], pos["stop_loss"],
+                                      pos["highest_high"], atr, trail_mult)
 
     def _close_position(self, df: pd.DataFrame, i: int, reason: str,
                         exit_price: float = None):
@@ -202,9 +204,10 @@ class BacktestEngine:
         if exit_price is None:
             exit_price = df.iloc[i]["close"]
 
-        pnl_per_unit = exit_price - pos["entry_price"]
-        pnl_absolute = pnl_per_unit * pos["position_size"]
-        pnl_pct = pnl_per_unit / pos["entry_price"]
+        pnl_absolute, pnl_pct = net_pnl(
+            pos["entry_price"], exit_price, pos["position_size"],
+            self.costs["fee_pct"], self.costs["slippage_pct"],
+        )
 
         self.capital += pnl_absolute
 

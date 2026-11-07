@@ -168,6 +168,9 @@ def run_simulation(run_id: str = None, strategy: str = None,
         initial_capital=sim_cfg.get("initial_capital", 10_000_000),
     )
     results = sim.simulate(returns)
+    if "error" in results:
+        print(f"Monte Carlo skipped: {results['error']} (got {len(returns)})")
+        return results
 
     # Print results
     print("\n" + "=" * 60)

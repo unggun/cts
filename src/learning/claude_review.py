@@ -18,6 +18,34 @@ from src.learning.filter_rules import (
 )
 
 
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+
+def extract_review(message) -> dict:
+    """Parse Claude's reply into a review dict.
+
+    Current models can open the response with a ``thinking`` block, so only
+    ``text`` blocks are read. A refusal comes back as HTTP 200 with
+    ``stop_reason == "refusal"`` and is reported as an error.
+    """
+    if getattr(message, "stop_reason", None) == "refusal":
+        details = getattr(message, "stop_details", None)
+        category = getattr(details, "category", None) if details else None
+        return {"error": f"Claude declined the request (category: {category})"}
+
+    response_text = "".join(
+        block.text for block in message.content if getattr(block, "type", None) == "text"
+    )
+    json_start = response_text.find("{")
+    json_end = response_text.rfind("}") + 1
+    if json_start >= 0 and json_end > json_start:
+        try:
+            return json.loads(response_text[json_start:json_end])
+        except json.JSONDecodeError:
+            pass
+    return {"raw_response": response_text}
+
+
 def build_analysis_prompt(findings: dict, time_patterns: dict,
                           current_params: dict, strategy: str,
                           sim_results: dict = None) -> str:
@@ -158,7 +186,7 @@ def run_claude_review(strategy: str = None, run_id: str = None,
     config = load_config()
     learning_cfg = config.get("learning", {})
     api_key = learning_cfg.get("claude_api_key", "")
-    model = learning_cfg.get("claude_model", "claude-sonnet-4-20250514")
+    model = learning_cfg.get("claude_model", DEFAULT_MODEL)
 
     # Get findings
     findings = analyze_winners_vs_losers(run_id=run_id, strategy=strategy,
@@ -198,25 +226,21 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
+        # Thinking is on by default on current models; max_tokens must
+        # cover thinking plus the JSON reply.
         message = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=16000,
+            output_config={"effort": "high"},
             messages=[{"role": "user", "content": prompt}],
         )
 
-        response_text = message.content[0].text
-
-        # Try to parse JSON from response
-        try:
-            # Find JSON block in response
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start >= 0 and json_end > json_start:
-                review = json.loads(response_text[json_start:json_end])
-            else:
-                review = {"raw_response": response_text}
-        except json.JSONDecodeError:
-            review = {"raw_response": response_text}
+        review = extract_review(message)
+        if "error" in review:
+            print(review["error"])
+            return review
+        if message.stop_reason == "max_tokens":
+            print("⚠️ Claude response hit max_tokens — output may be truncated")
 
         # Save the learning session and results in a single connection
         conn = get_connection()

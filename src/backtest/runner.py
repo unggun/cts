@@ -5,10 +5,11 @@ import json
 from src.config import load_config
 from src.data.database import get_connection, init_db, load_ohlcv, load_latest_parameters
 from src.backtest.engine import BacktestEngine
+from src.backtest.costs import trading_costs
 
 
 def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
-                 config: dict = None) -> dict:
+                 config: dict = None, use_filters: bool = True) -> dict:
     """Run a single backtest and return results.
 
     Args:
@@ -48,7 +49,8 @@ def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
 
     # Run backtest
     initial_capital = config.get("simulation", {}).get("initial_capital", 10_000_000)
-    engine = BacktestEngine(strategy, params, initial_capital)
+    engine = BacktestEngine(strategy, params, initial_capital,
+                            costs=trading_costs(config), use_filters=use_filters)
     results = engine.run(df, pair, timeframe)
 
     # Save trades

@@ -85,6 +85,12 @@ Strategy parameters are versioned in `strategy_parameters` table. The auto-learn
 
 `src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Rules are auto-refreshed each learning cycle.
 
+Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`). If filters leave fewer than `min_trades_for_analysis` trades, the cycle deactivates them and re-runs the backtest unfiltered (`filters_starved_cycle`); in `--dry-run` it re-runs unfiltered in memory only.
+
+### Costs and Paper/Backtest Parity
+
+Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per side (`src/backtest/costs.py`). The paper trader enters only on closed candles (`src/data/candles.py`) and uses the same ATR trailing stop as the engine (`src/backtest/exits.py`), persisting ratcheted stops to `trade_journal`. The live trader still acts on the forming candle and does not trail fixed-target (OCO) positions.
+
 ### Confidence-Gated Updates
 
 Claude returns a confidence level (low/medium/high). When confidence is "low", parameter updates are skipped to prevent degradation from uncertain analysis. Filter rules are still saved regardless of confidence.

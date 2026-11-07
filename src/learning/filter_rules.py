@@ -76,8 +76,49 @@ def save_filter_rules(strategy: str, rules: list[dict], source: str = "analyzer"
         conn.close()
 
 
-def load_active_filters(strategy: str) -> list[dict]:
-    """Load all active filter rules for a strategy."""
+DEFAULT_MAX_FILTER_RULES = 3
+
+
+def select_filters(rules: list[dict], limit: int | None) -> list[dict]:
+    """Pick the skip rules that actually get applied.
+
+    Keeps only "skip" rules, at most one per feature (the analyzer and
+    Claude often emit overlapping or contradictory rules on the same
+    feature), strongest |effect_size| first with unknown effect sizes last,
+    capped at ``limit``. Stacking many rules fitted on a few dozen trades
+    filters out nearly every signal, which starves the learning loop.
+    """
+    def strength(rule):
+        es = rule.get("effect_size")
+        return abs(es) if isinstance(es, (int, float)) else -1.0
+
+    picked, seen = [], set()
+    for rule in sorted(rules, key=strength, reverse=True):
+        if rule.get("rule_type") != "skip" or rule.get("feature") in seen:
+            continue
+        seen.add(rule["feature"])
+        picked.append(rule)
+        if limit is not None and len(picked) >= limit:
+            break
+    return picked
+
+
+def _configured_filter_limit() -> int:
+    from src.config import load_config
+    try:
+        return int(load_config().get("learning", {}).get(
+            "max_filter_rules", DEFAULT_MAX_FILTER_RULES))
+    except Exception:
+        return DEFAULT_MAX_FILTER_RULES
+
+
+def load_active_filters(strategy: str, limit: int | None = None) -> list[dict]:
+    """Load the active filter rules that should be applied for a strategy.
+
+    ``limit`` defaults to ``learning.max_filter_rules`` in config (3).
+    """
+    if limit is None:
+        limit = _configured_filter_limit()
     conn = get_connection()
     cur = conn.cursor()
 
@@ -106,7 +147,7 @@ def load_active_filters(strategy: str) -> list[dict]:
             "effect_size": row[4],
             "rationale": row[5],
         })
-    return filters
+    return select_filters(filters, limit)
 
 
 def apply_filters(features: dict, filters: list[dict]) -> tuple[bool, str]:

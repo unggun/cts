@@ -90,6 +90,18 @@ def check_quality_gates(all_results: dict,
     return len(failures) == 0, failures
 
 
+def filters_starved_cycle(all_results: dict, min_trades: int) -> bool:
+    """True when filter rules, not the strategy, are why a cycle has too few trades.
+
+    Without this check the loop deadlocks: filters block most signals, the
+    analyzer needs more trades than survive, Claude is never called, and the
+    filters never get revised.
+    """
+    total = sum(r.get("total_trades", 0) for r in all_results.values())
+    filtered = sum(r.get("filtered_trades", 0) for r in all_results.values())
+    return total < min_trades and filtered > 0
+
+
 def reset_filter_rules(strategy: str):
     """Deactivate all filter rules for a strategy."""
     conn = get_connection()
@@ -160,13 +172,28 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         results = run_backtest(strategy, pair, timeframe, config)
         all_results[pair] = results
 
+    min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
+    if filters_starved_cycle(all_results, min_trades):
+        kept = sum(r.get("total_trades", 0) for r in all_results.values())
+        skipped = sum(r.get("filtered_trades", 0) for r in all_results.values())
+        print(f"\n  ⚠️ Filter rules left only {kept} trades ({skipped} signals skipped, "
+              f"need {min_trades}). Re-running the backtest unfiltered so the "
+              f"loop can re-learn them.")
+        if dry_run:
+            print("  (Dry run — filters stay active in the DB)")
+        else:
+            reset_filter_rules(strategy)
+        for pair in pairs:
+            print(f"\n  Re-backtesting {pair} without filters...")
+            all_results[pair] = run_backtest(strategy, pair, timeframe, config,
+                                             use_filters=False)
+
     # Collect this cycle's run_ids so downstream analysis only sees
     # trades produced in this cycle (not the full backtest_trades history).
     cycle_run_ids = [r["run_id"] for r in all_results.values() if r.get("run_id")]
 
     # Check if we have enough trades
     total_trades = sum(r.get("total_trades", 0) for r in all_results.values())
-    min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
 
     if total_trades < min_trades:
         print(f"\n  Only {total_trades} trades generated (need {min_trades}). "
