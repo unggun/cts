@@ -113,6 +113,22 @@ def test_rejects_invalid_or_crashing_proposals(db, fake_strategy):
     assert _versions(db) == 0
 
 
+def test_promotion_without_regime_data(db, fake_strategy, monkeypatch):
+    idx = _seed(db)
+    config = dict(CONFIG, trading=dict(CONFIG["trading"], regime_pair="ETH/IDR"))
+    seen = []
+    real = pr.evaluate_bundle
+    monkeypatch.setattr(pr, "evaluate_bundle",
+                        lambda *a, **kw: seen.append(kw["btc_df"]) or real(*a, **kw))
+    btc_rule = {"filter_rules": [{"rule": "Skip when btc_return_24h <= -0.02",
+                                  "type": "skip"}]}
+    ev = pr.run_promotion("fake", btc_rule, {}, config, idx[300])
+    # No ETH/IDR candles: no BTC/IDR stand-in, and a btc_* rule can't be tested.
+    assert seen and all(b.empty for b in seen)
+    assert not ev["promoted"] and "no ETH/IDR candles to evaluate btc_return_24h" in ev["reason"]
+    assert _versions(db) == 0
+
+
 def test_promotion_ignores_forming_candle(db, fake_strategy, monkeypatch):
     now = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None)).floor("h")
     idx = _seed(db, n=100, end=now)           # last candle opened this hour: still forming

@@ -117,3 +117,51 @@ def test_engine_adds_regime_features_to_trades(monkeypatch):
     late = [t for t in e.trades if pd.Timestamp(t["entry_time"]) > df.index[24 * 15]]
     assert late and all("btc_st_4h_up" in t["features"] and "st_1d_up" in t["features"]
                         for t in late)
+
+
+# ── PR #5 review ────────────────────────────────────────────────────────
+
+def test_stale_btc_data_is_missing_not_carried_forward():
+    n = 24 * 30
+    pair, btc = _ohlcv(_walk(n, 8)), _ohlcv(_walk(n, 9))
+    out = add_regime_columns(pair, btc.iloc[:n - 48])      # BTC stopped 2 days ago
+    last_btc = n - 49
+    assert out[["btc_st_4h_up", "btc_return_24h"]].iloc[last_btc].notna().all()
+    assert out["btc_return_24h"].iloc[last_btc + 1:].isna().all()
+    assert out["btc_st_4h_up"].iloc[last_btc + 5:].isna().all()
+    assert out["st_4h_up"].iloc[-1] in (0.0, 1.0)          # the pair's own data is current
+
+
+def test_daily_candles_have_no_4h_features():
+    idx = pd.date_range("2025-01-01", periods=200, freq="1D")
+    close = _walk(200, 10)
+    daily = pd.DataFrame({"open": close, "high": close * 1.02, "low": close * 0.98,
+                          "close": close, "volume": 1.0}, index=idx)
+    out = add_regime_columns(daily, daily, timeframe="1d")
+    assert out[["st_4h_up", "adx_4h", "btc_st_4h_up"]].isna().all().all()
+    assert out["st_1d_up"].iloc[-1] in (0.0, 1.0)
+    assert out["btc_return_24h"].iloc[-1] == pytest.approx(close[-1] / close[-2] - 1)
+
+
+def test_resample_drops_buckets_missing_a_price():
+    df = _ohlcv(_walk(24 * 20, 11))
+    df.loc[df.index[8:12], "high"] = np.nan                 # one whole 4h bucket
+    h4 = resample(df, "4h")
+    assert len(h4) == 24 * 20 // 4 - 1 and h4.notna().all().all()
+    assert not np.isnan(supertrend_up(h4)[-1])
+
+
+def test_paper_trader_processes_the_regime_pair_first(monkeypatch):
+    from src.execution.paper_trader import PaperTrader
+    trader = PaperTrader.__new__(PaperTrader)
+    calls = []
+    monkeypatch.setattr(trader, "_process_pair", lambda p, tf: calls.append(("process", p)),
+                        raising=False)
+    monkeypatch.setattr(trader, "_refresh_candles", lambda p, tf: calls.append(("fetch", p)),
+                        raising=False)
+    trader.config = {"trading": {}}
+    trader._run_cycle(["ETH/IDR", "BTC/IDR", "SOL/IDR"], "1h")
+    assert calls == [("process", "BTC/IDR"), ("process", "ETH/IDR"), ("process", "SOL/IDR")]
+    calls.clear()
+    trader._run_cycle(["ETH/IDR", "SOL/IDR"], "1h")        # BTC not traded: still refreshed
+    assert calls == [("fetch", "BTC/IDR"), ("process", "ETH/IDR"), ("process", "SOL/IDR")]

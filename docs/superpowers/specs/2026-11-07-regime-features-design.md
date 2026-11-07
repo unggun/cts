@@ -16,6 +16,11 @@ Every strategy traded on 1h signals with no view of the bigger trend. The
   close time is ≤ its own close time. Tests check that truncating the data
   never changes past values and that a spiking forming candle doesn't move
   any closed bar.
+- **Missing, not stale (PR #5 review):** a value is NaN when its newest
+  candle closed a full period or more before the bar (a gap, or BTC stopped
+  updating), 4h features are NaN on timeframes coarser than 4h, the paper
+  trader refreshes the regime pair first each cycle, and promotion rejects a
+  `btc_*` rule it can't test instead of substituting another pair.
 - The same function runs in the engine (backtests, holdout promotion) and
   the paper trader. The live trader is unchanged: regime filter rules don't
   apply there (`apply_filters` ignores missing features).

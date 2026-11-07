@@ -10,6 +10,9 @@ Columns added (NaN until enough history):
     adx_4h               ADX(14) on 4h candles (trend strength)
     btc_st_4h_up         BTC's 4h Supertrend direction
     btc_return_24h       BTC's return over the last 24 hours
+
+A value is NaN when its source candles are missing or stale, and the 4h
+features are NaN on timeframes coarser than 4h (filters then don't apply).
 """
 import numpy as np
 import pandas as pd
@@ -25,7 +28,8 @@ def resample(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     out = df[["open", "high", "low", "close", "volume"]].resample(
         rule, label="left", closed="left").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-    return out.dropna(subset=["close"])
+    # A bucket missing any price would poison the ATR/ADX smoothing from there on.
+    return out.dropna(subset=["open", "high", "low", "close"])
 
 
 def _rma(x: np.ndarray, period: int) -> np.ndarray:
@@ -94,15 +98,29 @@ def adx(df: pd.DataFrame, period: int = 14) -> np.ndarray:
 
 def _as_of(df: pd.DataFrame, htf: pd.DataFrame, rule: str, values: np.ndarray,
            timeframe: str) -> np.ndarray:
-    """Value of the newest higher-timeframe candle closed when each bar closed."""
+    """Value of the newest higher-timeframe candle closed when each bar closed.
+
+    NaN when that candle closed ``rule`` or more before the bar did: the
+    source has a gap or stopped updating, and an old value isn't current.
+    """
     if htf.empty or df.empty:
         return np.full(len(df), np.nan)
     avail = pd.DataFrame({"t": htf.index + pd.Timedelta(rule), "v": values}).dropna(subset=["v"])
+    avail["avail"] = avail["t"]
     bars = pd.DataFrame({"t": df.index + pd.Timedelta(seconds=timeframe_seconds(timeframe)),
                          "pos": np.arange(len(df))})
     merged = pd.merge_asof(bars.sort_values("t"), avail.sort_values("t"), on="t",
-                           direction="backward")
-    return merged.sort_values("pos")["v"].to_numpy(dtype=float)
+                           direction="backward").sort_values("pos")
+    stale = (merged["t"] - merged["avail"]) >= pd.Timedelta(rule)
+    return merged["v"].mask(stale).to_numpy(dtype=float)
+
+
+def _trend(df: pd.DataFrame, rule: str, timeframe: str, fn) -> np.ndarray:
+    """``fn`` on ``rule`` candles of ``df``, as of each bar (NaN if ``df`` is coarser)."""
+    if timeframe_seconds(timeframe) > pd.Timedelta(rule).total_seconds():
+        return np.full(len(df), np.nan)        # 4h candles can't be built from daily ones
+    htf = resample(df, rule)
+    return _as_of(df, htf, rule, fn(htf), timeframe)
 
 
 def add_regime_columns(df: pd.DataFrame, btc_df: pd.DataFrame = None,
@@ -113,18 +131,19 @@ def add_regime_columns(df: pd.DataFrame, btc_df: pd.DataFrame = None,
         for col in REGIME_COLUMNS:
             df[col] = np.nan
         return df
-    h4, d1 = resample(df, "4h"), resample(df, "1D")
-    df["st_4h_up"] = _as_of(df, h4, "4h", supertrend_up(h4), timeframe)
-    df["st_1d_up"] = _as_of(df, d1, "1D", supertrend_up(d1), timeframe)
-    df["adx_4h"] = _as_of(df, h4, "4h", adx(h4), timeframe)
+    df["st_4h_up"] = _trend(df, "4h", timeframe, supertrend_up)
+    df["st_1d_up"] = _trend(df, "1D", timeframe, supertrend_up)
+    df["adx_4h"] = _trend(df, "4h", timeframe, adx)
 
     if btc_df is None or btc_df.empty:
         df["btc_st_4h_up"] = np.nan
         df["btc_return_24h"] = np.nan
         return df
     b4 = resample(btc_df, "4h")
-    df["btc_st_4h_up"] = _as_of(df, b4, "4h", supertrend_up(b4), timeframe)
-    # BTC 1h bars close at the same time as this pair's bars.
+    df["btc_st_4h_up"] = (_as_of(df, b4, "4h", supertrend_up(b4), timeframe)
+                          if timeframe_seconds(timeframe) <= 4 * 3600
+                          else np.full(len(df), np.nan))
+    # BTC bars close at the same time as this pair's bars; only an exact match counts.
     close = btc_df["close"].astype(float)
     ago = close.reindex(close.index - pd.Timedelta(hours=24)).to_numpy()
     ret = pd.Series(close.to_numpy() / ago - 1, index=close.index)

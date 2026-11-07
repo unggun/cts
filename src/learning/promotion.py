@@ -269,6 +269,8 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
             dfs[pair] = df
     btc_pair = regime_pair(config)
     btc_df = dfs[btc_pair] if btc_pair in dfs else closed(btc_pair)
+    if btc_df is None:
+        btc_df = pd.DataFrame()      # missing, as in paper trading: no BTC/IDR stand-in
     conn.close()
 
     inc_filters = load_active_filters(strategy)
@@ -284,8 +286,12 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
                                 timeframe, trade_start, costs, capital, btc_df=btc_df)
     bad = invalid_parameters(inc_params, cand_params)
     candidate, failure = empty, None
+    btc_rules = sorted({f["feature"] for f in cand_filters if f["feature"].startswith("btc_")})
     if bad:
         failure = f"invalid parameter values: {', '.join(bad[:5])}"
+    elif btc_rules and btc_df.empty:
+        # Without the regime pair these rules would be skipped, not tested.
+        failure = f"no {btc_pair} candles to evaluate {', '.join(btc_rules)}"
     else:
         try:
             candidate = evaluate_bundle(strategy, dict(cand_params, risk=risk), cand_filters,

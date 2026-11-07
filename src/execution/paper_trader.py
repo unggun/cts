@@ -83,8 +83,7 @@ class PaperTrader:
         while self.running:
             try:
                 self._refresh_learned_state()
-                for pair in pairs:
-                    self._process_pair(pair, timeframe)
+                self._run_cycle(pairs, timeframe)
 
                 # Status update
                 total_equity = self._calculate_equity(pairs)
@@ -107,16 +106,30 @@ class PaperTrader:
 
         print(f"\nPaper trader stopped. Final equity: {self._calculate_equity(pairs):,.0f} IDR")
 
-    def _process_pair(self, pair: str, timeframe: str):
-        """Process a single pair — check exits and entries."""
-        conn = get_connection()
+    def _run_cycle(self, pairs: list, timeframe: str):
+        """Process every pair once, the regime pair (BTC) first: every pair's
+        btc_* features then see its candles from this cycle, not the last."""
+        btc_pair = regime_pair(self.config)
+        if btc_pair not in pairs:
+            self._refresh_candles(btc_pair, timeframe)
+        for pair in sorted(pairs, key=lambda p: p != btc_pair):
+            self._process_pair(pair, timeframe)
 
-        # Fetch latest candles with retry
-        candles = None
+    def _refresh_candles(self, pair: str, timeframe: str):
+        """Fetch and store the latest candles of a pair that isn't traded."""
+        conn = get_connection()
+        try:
+            candles = self._fetch_candles(pair, timeframe)
+            if candles:
+                upsert_ohlcv(conn, pair, timeframe, candles)
+        finally:
+            conn.close()
+
+    def _fetch_candles(self, pair: str, timeframe: str):
+        """Latest candles from the exchange (3 tries), or None."""
         for attempt in range(3):
             try:
-                candles = self.exchange.fetch_ohlcv(pair, timeframe, limit=200)
-                break
+                return self.exchange.fetch_ohlcv(pair, timeframe, limit=200)
             except Exception as e:
                 if attempt < 2:
                     wait = (attempt + 1) * 5
@@ -124,8 +137,16 @@ class PaperTrader:
                     time.sleep(wait)
                 else:
                     print(f"  Failed fetching {pair} after 3 attempts: {e}")
-                    conn.close()
-                    return
+        return None
+
+    def _process_pair(self, pair: str, timeframe: str):
+        """Process a single pair — check exits and entries."""
+        conn = get_connection()
+
+        candles = self._fetch_candles(pair, timeframe)
+        if candles is None:
+            conn.close()
+            return
 
         if candles:
             upsert_ohlcv(conn, pair, timeframe, candles)
