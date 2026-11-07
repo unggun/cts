@@ -56,3 +56,20 @@ filters every loop, so promotions reach paper trading without restarts.
 - Rolling multi-fold walk-forward; shadow paper-trading of challengers.
 - Analyzing the unfiltered signal population.
 - Changing the live trader.
+
+## No-filters fallback (added 2026-11-07)
+
+Filters learned before this design (April–May) were often inverted and
+starved strategies (candlestick: 1 holdout trade). Each proposal was compared
+with that starved set and could still lose, so the old filters stayed.
+
+Now, when the proposal isn't promoted and the strategy has active filters,
+the current parameters with no filters are evaluated under the same rule
+(`decide`). If they pass, all filters are removed and a parameter version is
+saved with source `no_filter_fallback`. It's skipped when the proposal itself
+was "current params, no filters". Claude's history shows its proposal as
+rejected, with a note that the filters were removed instead.
+
+Dry run on production data (rule-search picks as the proposal, no Claude):
+candlestick 1 trade / −2.76% → no filters 97 / +0.44% (removed); the other
+eight strategies were decided by their proposal or kept their filters.

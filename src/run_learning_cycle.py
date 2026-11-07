@@ -117,11 +117,17 @@ def _verify_and_promote(strategy: str, review: dict, findings: dict, config: dic
           f"| max DD {inc['max_drawdown']:.1%}")
     print(f"    Candidate: {cand['trades']:4d} trades | expectancy {cand['expectancy']:+.3%} "
           f"| max DD {cand['max_drawdown']:.1%}")
+    if "no_filters" in evaluation:
+        nf = evaluation["no_filters"]
+        print(f"    No filters:{nf['trades']:4d} trades | expectancy {nf['expectancy']:+.3%} "
+              f"| max DD {nf['max_drawdown']:.1%}")
     if evaluation.get("promoted"):
         print(f"  ✅ Promoted as version {evaluation['version']}: {evaluation['reason']}")
     elif dry_run:
         verdict = "would promote" if evaluation["would_promote"] else "would not promote"
-        print(f"  (Dry run) {verdict} analyzer-only filters: {evaluation['reason']}")
+        what = "removing all filters" if evaluation.get("filters_removed") \
+            else "analyzer-only filters"
+        print(f"  (Dry run) {verdict} {what}: {evaluation['reason']}")
     else:
         print(f"  🛑 Not promoted: {evaluation['reason']}")
     if not dry_run:
@@ -441,7 +447,9 @@ def _promotion_lines(strategy: str, review: dict) -> list:
         param_diff = format_param_diff(strategy)
         if param_diff:
             lines.append(f"```\n{param_diff}\n```")
-        if ev.get("candidate_filters"):
+        if ev.get("filters_removed"):
+            lines.append("📋 Filters now: none (all removed)")
+        elif ev.get("candidate_filters"):
             lines.append(f"📋 Filters now: {'; '.join(ev['candidate_filters'])}".replace("_", "\\_"))
         return lines
     return [f"\n🛑 Not promoted: {reason}"]

@@ -65,6 +65,8 @@ def format_history(history: list) -> str:
             out += f"  - changes: {changes}\n"
         if h.get("filter_rules"):
             out += f"  - filters: {'; '.join(h['filter_rules'][:4])}\n"
+        if h.get("filters_removed"):
+            out += "  - all filters were removed instead: no filters beat the current set\n"
     out += "Do not re-propose changes that were rejected unless the data now clearly differs.\n"
     return out
 
