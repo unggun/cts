@@ -18,6 +18,7 @@ from src.indicators.macd import detect_macd, calculate_macd_levels
 from src.indicators.mean_reversion import detect_mean_reversion, calculate_mean_reversion_levels
 from src.indicators.bb_squeeze import detect_bb_squeeze, calculate_bb_squeeze_levels
 from src.indicators.features import extract_features
+from src.indicators.regime import DEFAULT_REGIME_PAIR, add_regime_columns
 from src.backtest.costs import net_pnl, trading_costs
 from src.backtest.exits import trail_stop
 from src.data.database import get_connection, save_backtest_trades, load_ohlcv
@@ -69,7 +70,7 @@ class BacktestEngine:
         self.equity_curve = []
 
     def run(self, df: pd.DataFrame, pair: str, timeframe: str,
-            trade_start=None) -> dict:
+            trade_start=None, btc_df: pd.DataFrame = None) -> dict:
         """Execute the backtest.
 
         Args:
@@ -78,6 +79,8 @@ class BacktestEngine:
             timeframe: Candle timeframe
             trade_start: If set, only trade bars at or after this timestamp.
                 Earlier bars still warm up the indicators (holdout runs).
+            btc_df: OHLCV of the regime pair (BTC) for the btc_* features;
+                defaults to ``df`` itself when ``pair`` is BTC/IDR.
 
         Returns:
             dict with performance metrics
@@ -89,6 +92,9 @@ class BacktestEngine:
 
         detect_fn, signal_col, levels_fn = STRATEGY_REGISTRY[self.strategy]
         df = detect_fn(df, self.params)
+        if btc_df is None and pair == DEFAULT_REGIME_PAIR:
+            btc_df = df
+        df = add_regime_columns(df, btc_df, timeframe)
 
         risk_cfg = self.params.get("risk", {
             "max_position_pct": 0.05,

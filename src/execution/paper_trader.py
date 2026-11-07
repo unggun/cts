@@ -24,6 +24,7 @@ from src.backtest.costs import net_pnl, trading_costs
 from src.backtest.exits import trail_stop
 from src.data.candles import last_closed_index
 from src.indicators.features import extract_features
+from src.indicators.regime import add_regime_columns, regime_pair
 from src.learning.filter_rules import load_active_filters, apply_filters
 
 
@@ -142,6 +143,10 @@ class PaperTrader:
 
         detect_fn, signal_col, levels_fn = STRATEGY_REGISTRY[self.strategy]
         df = detect_fn(df, self.params)
+        # Same higher-timeframe/BTC context as the backtest (regime features).
+        btc_pair = regime_pair(self.config)
+        btc_df = df if pair == btc_pair else load_ohlcv(conn, btc_pair, timeframe)
+        df = add_regime_columns(df, btc_df, timeframe)
 
         last_idx = len(df) - 1
         current_price = df.iloc[last_idx]["close"]

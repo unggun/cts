@@ -14,6 +14,7 @@ import pandas as pd
 
 from src.backtest.engine import BacktestEngine
 from src.data.candles import last_closed_index
+from src.indicators.regime import DEFAULT_REGIME_PAIR, regime_pair
 from src.data.database import get_connection, load_ohlcv, load_latest_parameters, save_parameters
 from src.learning.filter_rules import (
     load_active_filters, parse_analyzer_filters, parse_claude_filter_rules,
@@ -46,17 +47,21 @@ def holdout_start(config: dict, now: datetime = None) -> pd.Timestamp:
 
 def evaluate_bundle(strategy: str, params: dict, filters: list, dfs: dict,
                     timeframe: str, trade_start, costs: dict,
-                    initial_capital: float) -> dict:
+                    initial_capital: float, btc_df: pd.DataFrame = None) -> dict:
     """Backtest one bundle on the holdout window of every pair.
 
     Indicators warm up on the full history; entries start at ``trade_start``.
+    ``btc_df`` feeds the btc_* regime features (default: ``dfs["BTC/IDR"]``).
     Nothing is written to the database.
     """
+    if btc_df is None:
+        btc_df = dfs.get(DEFAULT_REGIME_PAIR)
     pnls, drawdowns, per_pair = [], [], {}
     for pair, df in dfs.items():
         engine = BacktestEngine(strategy, copy.deepcopy(params), initial_capital,
                                 costs=costs, filters=filters)
-        res = engine.run(df.copy(), pair, timeframe, trade_start=trade_start)
+        res = engine.run(df.copy(), pair, timeframe, trade_start=trade_start,
+                         btc_df=btc_df)
         trades = [t["pnl_pct"] for t in engine.trades]
         pnls.extend(trades)
         per_pair[pair] = len(trades)
@@ -251,13 +256,19 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     inc_params = load_latest_parameters(conn, strategy)
     if inc_params is None:
         inc_params = copy.deepcopy(config.get("strategy", {}).get(strategy, {}))
-    dfs = {}
-    for pair in config["trading"]["pairs"]:
+    def closed(pair):
         df = load_ohlcv(conn, pair, timeframe)
         # The newest stored candle may still be forming; judge on closed bars only.
         last = last_closed_index(df, timeframe) if not df.empty else None
-        if last is not None:
-            dfs[pair] = df.iloc[:last + 1]
+        return df.iloc[:last + 1] if last is not None else None
+
+    dfs = {}
+    for pair in config["trading"]["pairs"]:
+        df = closed(pair)
+        if df is not None:
+            dfs[pair] = df
+    btc_pair = regime_pair(config)
+    btc_df = dfs[btc_pair] if btc_pair in dfs else closed(btc_pair)
     conn.close()
 
     inc_filters = load_active_filters(strategy)
@@ -270,7 +281,7 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     empty = {"trades": 0, "expectancy": 0.0, "win_rate": 0.0, "max_drawdown": 0.0,
              "per_pair": {}}
     incumbent = evaluate_bundle(strategy, dict(inc_params, risk=risk), inc_filters, dfs,
-                                timeframe, trade_start, costs, capital)
+                                timeframe, trade_start, costs, capital, btc_df=btc_df)
     bad = invalid_parameters(inc_params, cand_params)
     candidate, failure = empty, None
     if bad:
@@ -278,7 +289,8 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     else:
         try:
             candidate = evaluate_bundle(strategy, dict(cand_params, risk=risk), cand_filters,
-                                        dfs, timeframe, trade_start, costs, capital)
+                                        dfs, timeframe, trade_start, costs, capital,
+                                        btc_df=btc_df)
         except Exception as e:  # a malformed proposal must not abort the cycle
             failure = f"candidate backtest failed: {type(e).__name__}: {e}"
     if failure:

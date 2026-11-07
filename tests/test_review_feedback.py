@@ -118,7 +118,7 @@ def test_promotion_ignores_forming_candle(db, fake_strategy, monkeypatch):
     idx = _seed(db, n=100, end=now)           # last candle opened this hour: still forming
     seen = []
     monkeypatch.setattr(pr, "evaluate_bundle",
-                        lambda s, p, f, dfs, *a: seen.append(dfs["BTC/IDR"].index[-1])
+                        lambda s, p, f, dfs, *a, **kw: seen.append(dfs["BTC/IDR"].index[-1])
                         or {"trades": 0, "expectancy": 0.0, "win_rate": 0.0,
                             "max_drawdown": 0.0, "per_pair": {}})
     pr.run_promotion("fake", {}, {}, CONFIG, idx[50], dry_run=True)
