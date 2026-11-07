@@ -17,8 +17,7 @@ import pandas as pd
 from src.config import load_config
 from src.data.downloader import create_exchange
 from src.data.database import (
-    get_connection, init_db, load_ohlcv, upsert_ohlcv, load_latest_parameters,
-    latest_parameter_version,
+    get_connection, init_db, load_ohlcv, upsert_ohlcv, load_latest_parameter_row,
 )
 from src.backtest.engine import STRATEGY_REGISTRY
 from src.backtest.costs import net_pnl, trading_costs
@@ -37,18 +36,11 @@ class PaperTrader:
         self.exchange = create_exchange(self.config)
         self.running = False
 
-        # Load strategy parameters (prefer learned, fallback to config)
+        # Load strategy parameters (prefer learned, fallback to config) and
+        # the active filter rules
         init_db()
-        conn = get_connection()
-        self.params = load_latest_parameters(conn, strategy)
-        if self.params is None:
-            self.params = self.config.get("strategy", {}).get(strategy, {})
-        self.params["risk"] = self.config.get("risk", {})
-        self.param_version = latest_parameter_version(conn, strategy)
-        conn.close()
-
-        # Load active filter rules
-        self.filters = load_active_filters(strategy)
+        row, self.filters = self._read_learned_state()
+        self._apply_params(row)
         if self.filters:
             print(f"  Loaded {len(self.filters)} active filter rules")
 
@@ -228,24 +220,44 @@ class PaperTrader:
 
         conn.close()
 
-    def _refresh_learned_state(self):
-        """Pick up promoted parameter versions and filter changes without a restart."""
+    def _read_learned_state(self):
+        """Newest parameter row and active filters, read from one DB snapshot.
+
+        A promotion writes both in one transaction; reading them together
+        means the trader never mixes new params with old filters.
+        """
         conn = get_connection()
         try:
-            version = latest_parameter_version(conn, self.strategy)
-            if version != self.param_version:
-                params = load_latest_parameters(conn, self.strategy)
-                if params is not None:
-                    params["risk"] = self.config.get("risk", {})
-                    self.params = params
-                    print(f"  🔄 Loaded parameter version {version} for {self.strategy}")
-                    self._notify(f"🔄 *PAPER {self.strategy}*: now trading parameter "
-                                 f"version {version}")
-                self.param_version = version
+            conn.execute("BEGIN")
+            row = load_latest_parameter_row(conn, self.strategy)
+            filters = load_active_filters(self.strategy, conn=conn)
+            conn.commit()
         finally:
             conn.close()
+        return row, filters
 
-        filters = load_active_filters(self.strategy)
+    def _apply_params(self, row):
+        """Use a saved parameter row, or the config params when none is saved."""
+        if row is None:
+            params = dict(self.config.get("strategy", {}).get(self.strategy, {}))
+        else:
+            params = row["parameters"]
+        params["risk"] = self.config.get("risk", {})
+        self.params = params
+        self.param_row_id = row["id"] if row else None
+        self.param_version = row["version"] if row else 0
+
+    def _refresh_learned_state(self):
+        """Pick up promoted parameter versions and filter changes without a restart."""
+        row, filters = self._read_learned_state()
+        # Compare row ids, not versions: a reset can make a new row reuse a version.
+        if (row["id"] if row else None) != self.param_row_id:
+            self._apply_params(row)
+            label = (f"parameter version {self.param_version}" if row
+                     else "config parameters (no saved version)")
+            print(f"  🔄 Loaded {label} for {self.strategy}")
+            self._notify(f"🔄 *PAPER {self.strategy}*: now trading {label}")
+
         key = lambda fs: [(f["feature"], f["operator"], str(f["threshold"])) for f in fs]
         if key(filters) != key(self.filters):
             self.filters = filters

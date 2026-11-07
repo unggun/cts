@@ -221,13 +221,12 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     if filters_starved_cycle(all_results, min_trades):
         kept = sum(r.get("total_trades", 0) for r in all_results.values())
         skipped = sum(r.get("filtered_trades", 0) for r in all_results.values())
+        # Analyze the unfiltered signals so the loop can re-learn filters. The
+        # active filters stay in place (they are the incumbent the proposal is
+        # judged against) until a promotion replaces them.
         print(f"\n  ⚠️ Filter rules left only {kept} trades ({skipped} signals skipped, "
               f"need {min_trades}). Re-running the backtest unfiltered so the "
               f"loop can re-learn them.")
-        if dry_run:
-            print("  (Dry run — filters stay active in the DB)")
-        else:
-            reset_filter_rules(strategy)
         for pair in pairs:
             print(f"\n  Re-backtesting {pair} without filters...")
             all_results[pair] = run_backtest(strategy, pair, timeframe, config,

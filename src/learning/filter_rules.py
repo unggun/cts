@@ -112,20 +112,25 @@ def _configured_filter_limit() -> int:
         return DEFAULT_MAX_FILTER_RULES
 
 
-def load_active_filters(strategy: str, limit: int | None = None) -> list[dict]:
+def load_active_filters(strategy: str, limit: int | None = None,
+                        conn=None) -> list[dict]:
     """Load the active filter rules that should be applied for a strategy.
 
     ``limit`` defaults to ``learning.max_filter_rules`` in config (3).
+    Pass ``conn`` to read inside the caller's transaction.
     """
     if limit is None:
         limit = _configured_filter_limit()
-    conn = get_connection()
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
     cur = conn.cursor()
 
     # Check if filter_rules table exists
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='filter_rules'")
     if not cur.fetchone():
-        conn.close()
+        if own_conn:
+            conn.close()
         return []
 
     cur.execute("""
@@ -135,7 +140,8 @@ def load_active_filters(strategy: str, limit: int | None = None) -> list[dict]:
         ORDER BY ABS(effect_size) DESC
     """, (strategy,))
     rows = cur.fetchall()
-    conn.close()
+    if own_conn:
+        conn.close()
 
     filters = []
     for row in rows:

@@ -79,7 +79,7 @@ Strategy parameters are versioned in `strategy_parameters` table. New versions a
 
 ### Auto-Learning Loop
 
-`src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs on the train window → analyze winners/losers → Monte Carlo → Claude review (proposal only) → holdout validation and promotion → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead; it still evaluates the analyzer's filters on the holdout but saves nothing.
+`src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs on the train window → analyze winners/losers → Monte Carlo → Claude review (proposal only) → holdout validation and promotion → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead; it still evaluates the analyzer's filters on the holdout but never promotes. A dry run still writes the train-window `backtest_trades` and the `simulation_results` row; it saves no parameter version, filter change or `learning_sessions` row.
 
 ### Propose → Verify → Promote
 
@@ -89,7 +89,7 @@ The newest `learning.promotion.holdout_days` (90) of data are held out from anal
 
 `src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Proposed rule sets only become active when promoted (see Propose → Verify → Promote).
 
-Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`). If filters leave fewer than `min_trades_for_analysis` trades, the cycle deactivates them and re-runs the backtest unfiltered (`filters_starved_cycle`); in `--dry-run` it re-runs unfiltered in memory only.
+Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`). If filters leave fewer than `min_trades_for_analysis` trades, the cycle re-runs the backtest unfiltered so the analyzer and Claude see the full signal population (`filters_starved_cycle`). The active filters stay in place as the incumbent until a promotion replaces them.
 
 ### Costs and Paper/Backtest Parity
 
@@ -97,7 +97,7 @@ Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per s
 
 ### Confidence-Gated Updates
 
-Claude returns a confidence level (low/medium/high). When confidence is "low", the proposal is not evaluated or promoted. Filter rules change only through promotion or the filter-saturation reset.
+Claude returns a confidence level (low/medium/high). When confidence is "low", the proposal is not evaluated or promoted. Filter rules change only through promotion (or a manual `--reset-filters`).
 
 ### Database Schema
 

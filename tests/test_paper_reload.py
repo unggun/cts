@@ -27,6 +27,7 @@ def _trader():
     t.config = {"risk": {"max_positions": 3}}
     t.params = {"macd": {"fast_period": 3}, "risk": {"max_positions": 3}}
     t.param_version = 0
+    t.param_row_id = None
     t.filters = []
     t._notify = lambda msg: None
     return t
@@ -51,3 +52,29 @@ def test_refreshes_filters(db):
                                    "effect_size": 0.8}], source="analyzer")
     t._refresh_learned_state()
     assert [f["feature"] for f in t.filters] == ["atr_pct"]
+
+
+def test_reset_falls_back_to_config_params(db):
+    t = _trader()
+    t.config["strategy"] = {"macd": {"macd": {"fast_period": 3}}}
+    conn = get_connection(db)
+    save_parameters(conn, "macd", {"macd": {"fast_period": 5}})
+    t._refresh_learned_state()
+    assert t.params["macd"]["fast_period"] == 5
+
+    conn.execute("DELETE FROM strategy_parameters")
+    conn.commit()
+    t._refresh_learned_state()
+    assert t.params["macd"]["fast_period"] == 3 and t.param_version == 0
+
+
+def test_new_row_with_reused_version_is_loaded(db):
+    t = _trader()
+    conn = get_connection(db)
+    save_parameters(conn, "macd", {"macd": {"fast_period": 5}})
+    t._refresh_learned_state()
+    conn.execute("DELETE FROM strategy_parameters")
+    conn.commit()
+    save_parameters(conn, "macd", {"macd": {"fast_period": 8}})   # version 1 again
+    t._refresh_learned_state()
+    assert t.params["macd"]["fast_period"] == 8 and t.param_version == 1

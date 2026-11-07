@@ -176,7 +176,12 @@ def init_db(db_path: str = None):
     cur.execute("PRAGMA table_info(learning_sessions)")
     existing_cols = {row["name"] for row in cur.fetchall()}
     if "evaluation_json" not in existing_cols:
-        cur.execute("ALTER TABLE learning_sessions ADD COLUMN evaluation_json TEXT")
+        try:
+            cur.execute("ALTER TABLE learning_sessions ADD COLUMN evaluation_json TEXT")
+        except sqlite3.OperationalError as e:
+            # Another process (paper trader, learning cycle) added it first.
+            if "duplicate column" not in str(e):
+                raise
 
     conn.commit()
     conn.close()
@@ -272,8 +277,12 @@ def load_backtest_trades(conn: sqlite3.Connection, run_id: str = None,
 
 def save_parameters(conn: sqlite3.Connection, strategy: str,
                     parameters: dict, source: str = "manual",
-                    performance: dict = None, notes: str = None) -> int:
-    """Save a new version of strategy parameters. Returns version number."""
+                    performance: dict = None, notes: str = None,
+                    commit: bool = True) -> int:
+    """Save a new version of strategy parameters. Returns version number.
+
+    Pass ``commit=False`` to make it part of a larger transaction.
+    """
     cur = conn.cursor()
     cur.execute(
         "SELECT COALESCE(MAX(version), 0) FROM strategy_parameters WHERE strategy=?",
@@ -287,17 +296,20 @@ def save_parameters(conn: sqlite3.Connection, strategy: str,
         VALUES (?, ?, ?, ?, ?, ?)
     """, (strategy, next_version, json.dumps(parameters),
           json.dumps(performance) if performance else None, source, notes))
-    conn.commit()
+    if commit:
+        conn.commit()
     return next_version
 
 
-def latest_parameter_version(conn: sqlite3.Connection, strategy: str) -> int:
-    """Highest saved parameter version for a strategy (0 if none)."""
-    row = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) FROM strategy_parameters WHERE strategy=?",
-        (strategy,),
-    ).fetchone()
-    return int(row[0])
+def load_latest_parameter_row(conn: sqlite3.Connection, strategy: str) -> Optional[dict]:
+    """Newest saved version as ``{"id", "version", "parameters"}``, or None."""
+    row = conn.execute("""
+        SELECT id, version, parameters_json FROM strategy_parameters
+        WHERE strategy=? ORDER BY version DESC LIMIT 1
+    """, (strategy,)).fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "version": row[1], "parameters": json.loads(row[2])}
 
 
 def load_latest_parameters(conn: sqlite3.Connection, strategy: str) -> Optional[dict]:

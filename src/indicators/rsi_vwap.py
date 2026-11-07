@@ -14,7 +14,8 @@ import pandas as pd
 def _compute_rsi(closes: np.ndarray, period: int = 14) -> np.ndarray:
     """Compute RSI for entire array."""
     rsi = np.full(len(closes), np.nan)
-    if len(closes) < period + 1:
+    # A non-positive period would average future closes into earlier bars.
+    if period < 1 or len(closes) < period + 1:
         return rsi
 
     deltas = np.diff(closes)

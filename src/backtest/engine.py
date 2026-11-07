@@ -166,6 +166,9 @@ class BacktestEngine:
         # Force close any remaining position at end
         if self.position is not None:
             self._close_position(df, len(df) - 1, "end_of_data")
+            # Count the exit costs in the equity curve (and so in max drawdown).
+            self.equity_curve.append({"timestamp": str(df.index[-1]),
+                                      "equity": self.capital})
 
         # Calculate performance
         return self._calculate_performance(pair, timeframe)

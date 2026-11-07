@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from src.backtest.engine import BacktestEngine
+from src.data.candles import last_closed_index
 from src.data.database import get_connection, load_ohlcv, load_latest_parameters, save_parameters
 from src.learning.filter_rules import (
     load_active_filters, parse_analyzer_filters, parse_claude_filter_rules,
@@ -70,6 +71,18 @@ def evaluate_bundle(strategy: str, params: dict, filters: list, dfs: dict,
     }
 
 
+def describe_rule(cfg: dict) -> str:
+    """The promotion rule in plain words, from the effective config (for Claude's prompt)."""
+    return (
+        f"They replace it only if they produce at least {cfg['min_holdout_trades']} holdout "
+        f"trades and keep at least {cfg['min_trade_ratio']:.0%} of the current version's trades, "
+        f"expectancy per trade improves by at least {cfg['min_expectancy_gain']:.2%}, and max "
+        f"drawdown is not more than {cfg['max_drawdown_worsening'] * 100:g} points worse. If the "
+        f"current version itself has fewer than {cfg['min_holdout_trades']} holdout trades, the "
+        f"proposal only needs positive expectancy."
+    )
+
+
 def decide(incumbent: dict, candidate: dict, cfg: dict, changed: bool) -> tuple[bool, str]:
     """Apply the promotion rule. Returns (promote, reason)."""
     if not changed:
@@ -118,6 +131,31 @@ def _filter_key(rules: list) -> set:
     return {(r["feature"], r["operator"], thr(r["threshold"])) for r in rules}
 
 
+def invalid_parameters(inc_params: dict, cand_params: dict, path: str = "") -> list:
+    """Candidate values that turn a positive incumbent number into something else.
+
+    Periods, multipliers and thresholds in these strategies are positive; a zero,
+    negative or non-numeric replacement either crashes the indicator or lets it
+    read future bars.
+    """
+    bad = []
+    for key, old in inc_params.items():
+        if key == "risk" or key not in cand_params:
+            continue
+        new, name = cand_params[key], f"{path}{key}"
+        if isinstance(old, dict):
+            if isinstance(new, dict):
+                bad.extend(invalid_parameters(old, new, f"{name}."))
+            else:
+                bad.append(name)
+        elif isinstance(old, (int, float)) and not isinstance(old, bool) and old > 0:
+            if isinstance(new, bool) or not isinstance(new, (int, float)) or new <= 0:
+                bad.append(name)
+            elif isinstance(old, int) and isinstance(new, float) and not new.is_integer():
+                bad.append(name)
+    return bad
+
+
 def bundle_changed(inc_params: dict, inc_filters: list,
                    cand_params: dict, cand_filters: list) -> bool:
     strip = lambda p: {k: v for k, v in p.items() if k != "risk"}
@@ -128,8 +166,11 @@ def bundle_changed(inc_params: dict, inc_filters: list,
 
 # ── Persistence ─────────────────────────────────────────────────────────
 
-def replace_active_filters(strategy: str, rules: list, conn=None):
-    """Make ``rules`` the strategy's only active filters."""
+def replace_active_filters(strategy: str, rules: list, conn=None, commit: bool = True):
+    """Make ``rules`` the strategy's only active filters.
+
+    Pass ``commit=False`` to make it part of a larger transaction.
+    """
     own = conn is None
     if own:
         conn = get_connection()
@@ -143,7 +184,8 @@ def replace_active_filters(strategy: str, rules: list, conn=None):
         """, (strategy, r["feature"], r["operator"], str(r["threshold"]),
               r.get("rule_type", "skip"), r.get("effect_size"),
               r.get("source", "promotion"), r.get("rationale", "")))
-    conn.commit()
+    if commit:
+        conn.commit()
     if own:
         conn.close()
 
@@ -175,10 +217,15 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
             ev = json.loads(row["evaluation_json"])
         except (TypeError, json.JSONDecodeError):
             continue
+        evaluated = "candidate" in ev
         history.append({
             "created_at": row["created_at"],
             "parameter_changes": rec.get("parameter_changes", []),
-            "filter_rules": [f.get("rule", "") for f in rec.get("filter_rules", [])],
+            # The filter set that was actually backtested (Claude's rules merged
+            # with the analyzer's and capped), not just what Claude wrote.
+            "filter_rules": ev.get("candidate_filters", []) if evaluated
+            else [f.get("rule", "") for f in rec.get("filter_rules", [])],
+            "evaluated": evaluated,
             "promoted": bool(ev.get("promoted")),
             "reason": ev.get("reason", ""),
             "incumbent": ev.get("incumbent", {}),
@@ -207,8 +254,10 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     dfs = {}
     for pair in config["trading"]["pairs"]:
         df = load_ohlcv(conn, pair, timeframe)
-        if not df.empty:
-            dfs[pair] = df
+        # The newest stored candle may still be forming; judge on closed bars only.
+        last = last_closed_index(df, timeframe) if not df.empty else None
+        if last is not None:
+            dfs[pair] = df.iloc[:last + 1]
     conn.close()
 
     inc_filters = load_active_filters(strategy)
@@ -218,14 +267,25 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     cand_filters = candidate_filters(review, findings, _configured_filter_limit())
 
     costs = trading_costs(config)
-    inc_eval = dict(inc_params, risk=risk)
-    cand_eval = dict(cand_params, risk=risk)
-    incumbent = evaluate_bundle(strategy, inc_eval, inc_filters, dfs, timeframe,
-                                trade_start, costs, capital)
-    candidate = evaluate_bundle(strategy, cand_eval, cand_filters, dfs, timeframe,
-                                trade_start, costs, capital)
-    changed = bundle_changed(inc_params, inc_filters, cand_params, cand_filters)
-    promote, reason = decide(incumbent, candidate, cfg, changed)
+    empty = {"trades": 0, "expectancy": 0.0, "win_rate": 0.0, "max_drawdown": 0.0,
+             "per_pair": {}}
+    incumbent = evaluate_bundle(strategy, dict(inc_params, risk=risk), inc_filters, dfs,
+                                timeframe, trade_start, costs, capital)
+    bad = invalid_parameters(inc_params, cand_params)
+    candidate, failure = empty, None
+    if bad:
+        failure = f"invalid parameter values: {', '.join(bad[:5])}"
+    else:
+        try:
+            candidate = evaluate_bundle(strategy, dict(cand_params, risk=risk), cand_filters,
+                                        dfs, timeframe, trade_start, costs, capital)
+        except Exception as e:  # a malformed proposal must not abort the cycle
+            failure = f"candidate backtest failed: {type(e).__name__}: {e}"
+    if failure:
+        promote, reason = False, failure
+    else:
+        changed = bundle_changed(inc_params, inc_filters, cand_params, cand_filters)
+        promote, reason = decide(incumbent, candidate, cfg, changed)
 
     evaluation = {
         "holdout_start": str(trade_start),
@@ -238,13 +298,21 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
         "reason": reason,
     }
     if promote and not dry_run:
+        # One transaction: paper traders must never see the new params with the
+        # old filters (or the reverse), and a crash must not leave half a bundle.
         conn = get_connection()
-        version = save_parameters(
-            conn, strategy, cand_params, source="claude_auto_review",
-            performance={"holdout": candidate, "win_rate": candidate["win_rate"]},
-            notes=json.dumps(review.get("key_insights", [])),
-        )
-        replace_active_filters(strategy, cand_filters, conn=conn)
-        conn.close()
+        try:
+            version = save_parameters(
+                conn, strategy, cand_params, source="claude_auto_review",
+                performance={"holdout": candidate, "win_rate": candidate["win_rate"]},
+                notes=json.dumps(review.get("key_insights", [])), commit=False,
+            )
+            replace_active_filters(strategy, cand_filters, conn=conn, commit=False)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         evaluation["version"] = version
     return evaluation

@@ -30,7 +30,7 @@ def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
 
     # Load data
     df = load_ohlcv(conn, pair, timeframe)
-    if end is not None:
+    if end is not None and not df.empty:
         df = df[df.index < end]  # train window only; newer data is held out
     if df.empty:
         print(f"No data found for {pair} {timeframe}. Run the downloader first.")

@@ -48,11 +48,16 @@ def format_history(history: list) -> str:
         return ""
     out = "\n## Your Previous Proposals and Their Holdout Results (newest first)\n"
     for h in history:
-        verdict = "PROMOTED" if h["promoted"] else "REJECTED"
-        cand, inc = h.get("candidate", {}), h.get("incumbent", {})
-        out += (f"- {h['created_at']}: {verdict} — {h['reason']} "
-                f"(candidate {cand.get('trades', 0)} trades, exp {cand.get('expectancy', 0):+.3%}; "
-                f"current {inc.get('trades', 0)} trades, exp {inc.get('expectancy', 0):+.3%})\n")
+        if not h.get("evaluated", True):
+            out += f"- {h['created_at']}: NOT EVALUATED — {h['reason']}\n"
+        else:
+            verdict = "PROMOTED" if h["promoted"] else "REJECTED"
+            cand, inc = h.get("candidate", {}), h.get("incumbent", {})
+            out += (f"- {h['created_at']}: {verdict} — {h['reason']} "
+                    f"(candidate {cand.get('trades', 0)} trades, "
+                    f"exp {cand.get('expectancy', 0):+.3%}; "
+                    f"current {inc.get('trades', 0)} trades, "
+                    f"exp {inc.get('expectancy', 0):+.3%})\n")
         changes = ", ".join(f"{c.get('param')}: {c.get('old')}→{c.get('new')}"
                             for c in h.get("parameter_changes", [])[:6])
         if changes:
@@ -66,8 +71,15 @@ def format_history(history: list) -> str:
 def build_analysis_prompt(findings: dict, time_patterns: dict,
                           current_params: dict, strategy: str,
                           sim_results: dict = None, history: list = None,
-                          holdout_days: int = None) -> str:
-    """Build the prompt for Claude to analyze trading patterns."""
+                          holdout_days: int = None, promotion_rule: str = None) -> str:
+    """Build the prompt for Claude to analyze trading patterns.
+
+    ``promotion_rule`` describes the effective acceptance criteria
+    (``promotion.describe_rule``); defaults to the built-in thresholds.
+    """
+    if promotion_rule is None:
+        from src.learning.promotion import DEFAULTS, describe_rule
+        promotion_rule = describe_rule(DEFAULTS)
 
     prompt = f"""You are a quantitative trading analyst reviewing backtest results for a '{strategy}' strategy on crypto (Tokocrypto exchange, IDR pairs).
 
@@ -144,10 +156,9 @@ Top features by effect size:
 ## How Your Proposal Is Judged
 The data above excludes the most recent {holdout_days} days. Your updated parameters and
 filter rules are backtested on those unseen {holdout_days} days, after trading fees and
-slippage, against the current version. They replace it only if expectancy per trade improves
-by at least 0.05%, at least 20 trades remain (and at least half of the current version's
-trades), and max drawdown is not more than 5 points worse. Filter rules that remove most
-trades will be rejected. Propose only changes you expect to generalize.
+slippage, against the current version. {promotion_rule}
+Filter rules that remove most trades will be rejected. Propose only changes you expect to
+generalize.
 """
 
     prompt += """
@@ -216,6 +227,8 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         dict with Claude's proposal. Nothing is applied here; ``_session_id``
         is the learning_sessions row the evaluation gets recorded on.
     """
+    from src.learning.promotion import describe_rule, promotion_config
+
     config = load_config()
     learning_cfg = config.get("learning", {})
     api_key = learning_cfg.get("claude_api_key", "")
@@ -241,7 +254,7 @@ def run_claude_review(strategy: str = None, run_id: str = None,
     prompt = build_analysis_prompt(
         findings, time_patterns, current_params,
         strategy or "darvas", sim_results, history=history,
-        holdout_days=holdout_days,
+        holdout_days=holdout_days, promotion_rule=describe_rule(promotion_config(config)),
     )
 
     if dry_run:
