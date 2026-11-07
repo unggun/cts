@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .DS_Storedata/trading.db-wal
 data/trading.db-shm
+venv/
+config.yaml.save
