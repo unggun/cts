@@ -1,5 +1,6 @@
 """SQLite database schema and operations for the trading system."""
 import sqlite3
+import sys
 import json
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +10,12 @@ from src.config import get_db_path
 
 
 def get_connection(db_path: str = None) -> sqlite3.Connection:
-    """Get a database connection with row factory."""
+    """Get a database connection with row factory.
+
+    Note: callers are responsible for calling .close() explicitly.
+    Using the returned connection in a `with` block manages
+    transactions only — it does NOT close the connection.
+    """
     if db_path is None:
         db_path = get_db_path()
     conn = sqlite3.connect(db_path, timeout=60)
@@ -148,9 +154,26 @@ def init_db(db_path: str = None):
         )
     """)
 
+    # ── Migration: add protection_mode column if missing ──
+    # Used by src/execution/live_trader.py to track exchange-side protection state.
+    cur.execute("PRAGMA table_info(trade_journal)")
+    existing_cols = {row["name"] for row in cur.fetchall()}
+    if "protection_mode" not in existing_cols:
+        cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_mode TEXT")
+
+    # ── Migration: persist protection order IDs for restart reconciliation ──
+    # protection_order_id holds the OCO listClientOrderId or stop-only orderId.
+    # protection_child_ids holds JSON-serialized (TP_id, SL_id) for OCO; NULL otherwise.
+    cur.execute("PRAGMA table_info(trade_journal)")
+    existing_cols = {row["name"] for row in cur.fetchall()}
+    if "protection_order_id" not in existing_cols:
+        cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_order_id TEXT")
+    if "protection_child_ids" not in existing_cols:
+        cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_child_ids TEXT")
+
     conn.commit()
     conn.close()
-    print(f"Database initialized at {db_path or get_db_path()}")
+    print(f"Database initialized at {db_path or get_db_path()}", file=sys.stderr)
 
 
 # ── OHLCV operations ──

@@ -28,6 +28,7 @@ from src.data.database import (
 from src.indicators.darvas import detect_darvas_boxes, calculate_trade_levels
 from src.indicators.dbw import detect_dbw, calculate_dbw_levels
 from src.indicators.features import extract_features
+from src.execution import protection as prot
 
 
 class LiveTrader:
@@ -226,7 +227,12 @@ class LiveTrader:
 
         # ── Check exits ──
         if pair in self.positions:
-            self._check_exit(df, last_idx, pair, conn)
+            # Exchange-side protection check first (with trailing
+            # ratchet for ATH); falls through to candle-based polling
+            # if protection_mode is "polling" or unset.
+            closed = self._check_protection(pair, df, last_idx, conn)
+            if not closed and pair in self.positions:
+                self._check_exit(df, last_idx, pair, conn)
 
         # ── Check entries ──
         if pair not in self.positions:
@@ -236,8 +242,15 @@ class LiveTrader:
         conn.close()
 
     def _check_exit(self, df, idx, pair, conn):
-        """Check and execute exits."""
+        """Check and execute exits via candle-based polling. Used for
+        positions in protection_mode='polling' or legacy positions
+        without protection_mode set."""
         pos = self.positions[pair]
+        if pos.get("protection_mode") in ("oco", "stop_only"):
+            # Exchange-side protection is active; _check_protection
+            # handles fills. Don't double-trigger from candles.
+            return
+
         low = df.iloc[idx]["low"]
         high = df.iloc[idx]["high"]
 
@@ -251,7 +264,8 @@ class LiveTrader:
             exit_price = pos["target"]
             exit_reason = "target"
 
-        # ATH trailing stop
+        # ATH trailing stop (polling fallback only — the exchange-side
+        # ratchet is handled by _maybe_ratchet_trailing_stop)
         if pos.get("is_ath") and exit_price is None:
             from src.indicators.features import _atr
             atr = _atr(df["high"].values, df["low"].values, df["close"].values, 14)
@@ -261,6 +275,117 @@ class LiveTrader:
 
         if exit_price:
             self._execute_sell(pair, exit_price, exit_reason, conn)
+
+    def _check_protection(self, pair, df, idx, conn):
+        """For positions protected by exchange-side OCO/stop, check if
+        the protective order has filled or been cancelled. For ATH
+        stop-only positions, also handle the trailing-stop ratchet.
+
+        Returns True if the position was closed (caller should NOT also
+        run _check_exit for this pair). Returns False if the position
+        is still open OR if it falls back to polling.
+        """
+        pos = self.positions.get(pair)
+        if not pos:
+            return False
+        mode = pos.get("protection_mode")
+        if mode not in ("oco", "stop_only"):
+            return False
+
+        try:
+            result = prot.check_protection_fill(self.exchange, pair, pos)
+        except Exception as e:
+            print(f"  Error checking protection for {pair}: {e}")
+            return False
+
+        if isinstance(result, prot.LostProtection):
+            print(f"  ⚠️ {pair} protection lost — falling back to polling")
+            self._notify(f"⚠️ {pair} protection cancelled externally — polling fallback")
+            pos["protection_mode"] = "polling"
+            pos["protection_order_id"] = None
+            pos["protection_child_ids"] = None
+            self._update_protection_state(
+                conn, pair, "polling", None, None
+            )
+            return False
+
+        if result is None:
+            # Still active and unfilled. For ATH stop-only, check whether
+            # we should ratchet the trailing stop up.
+            if mode == "stop_only" and pos.get("is_ath"):
+                self._maybe_ratchet_trailing_stop(pair, pos, df, idx, conn)
+            return False
+
+        # FillResult: exchange already executed the sell. Close locally.
+        pnl_per_unit = result.price - pos["entry_price"]
+        pnl_absolute = pnl_per_unit * pos["position_size"]
+        pnl_pct = pnl_per_unit / pos["entry_price"]
+        self.daily_pnl += pnl_absolute
+        self.trade_count_today += 1
+
+        emoji = "✅" if pnl_pct > 0 else "❌"
+        print(f"\n  {emoji} {pair} CLOSED via {result.reason} "
+              f"@ {result.price:,.0f} | PnL: {pnl_pct:+.2%} "
+              f"({pnl_absolute:+,.0f} IDR)")
+
+        self._notify(
+            f"{emoji} *SELL {pair}* ({result.reason})\n"
+            f"Exit: {result.price:,.0f}\n"
+            f"PnL: {pnl_pct:+.2%} ({pnl_absolute:+,.0f} IDR)"
+        )
+
+        self._log_exit(conn, pair, result.price, result.reason,
+                       pnl_pct, pnl_absolute, pos,
+                       exit_time=result.time or None)
+        del self.positions[pair]
+        return True
+
+    def _maybe_ratchet_trailing_stop(self, pair, pos, df, idx, conn):
+        """For ATH stop-only positions: compute new trailing stop from
+        recent candles. If it's higher than the current stop by at least
+        min_trail_ratchet_pct, cancel-and-replace the exchange order."""
+        from src.indicators.features import _atr
+
+        protection_cfg = self.config.get("risk", {}).get("protection", {})
+        min_ratchet = protection_cfg.get("min_trail_ratchet_pct", 0.005)
+
+        atr = _atr(df["high"].values, df["low"].values,
+                   df["close"].values, 14)
+        high = df.iloc[idx]["high"]
+        new_trail = high - 2 * atr
+
+        ratchet_threshold = pos["stop_loss"] * (1 + min_ratchet)
+        if new_trail <= ratchet_threshold:
+            return  # not enough movement to bother
+
+        result = prot.replace_trailing_stop(
+            self.exchange, pair,
+            old_order_id=pos["protection_order_id"],
+            new_stop=new_trail,
+            size=pos["position_size"],
+            strategy=self.strategy,
+            stop_limit_slip_pct=protection_cfg.get("stop_limit_slip_pct", 0.005),
+        )
+
+        if result.mode == "polling":
+            # cancel succeeded but new placement failed → fall through
+            print(f"  ⚠️ {pair} trail replace failed — polling fallback")
+            self._notify(f"⚠️ {pair} trail replace failed — polling fallback")
+            pos["protection_mode"] = "polling"
+            pos["protection_order_id"] = None
+            self._update_protection_state(
+                conn, pair, "polling", None, None
+            )
+        elif result.mode == "kept":
+            # cancel failed; old order still active. Don't change in-memory state.
+            pass
+        else:  # "stop_only" success
+            pos["stop_loss"] = new_trail
+            pos["protection_order_id"] = result.order_id
+            self._update_protection_state(
+                conn, pair, "stop_only", result.order_id, None
+            )
+            print(f"  ↗ {pair} trailing stop ratcheted to {new_trail:,.0f}")
 
     def _try_entry(self, df, idx, pair, conn):
         """Evaluate and execute entry."""
@@ -342,17 +467,74 @@ class LiveTrader:
                 filled_price = order.get("average") or entry_price
 
             if status in ("closed", "filled"):
+                filled_size = order.get("filled", size)
+
+                # ── Journal the entry FIRST with polling as safe default ──
+                # If we crash before place_protection completes, polling
+                # protection is the safe fallback. After successful
+                # placement we update the journal with the real mode/ids.
+                features_for_log = features
+                self._log_entry(conn, pair, filled_price, levels,
+                                filled_size, features_for_log,
+                                "polling", None, None)
+
+                # ── Place exchange-side protection ──
+                protection_cfg = self.config.get("risk", {}).get("protection", {})
+                if protection_cfg.get("enabled", True):
+                    prot_result = prot.place_protection(
+                        self.exchange, pair, filled_size,
+                        stop_loss=levels["stop_loss"],
+                        target=levels.get("target"),
+                        is_ath=levels.get("is_ath", False),
+                        strategy=self.strategy,
+                        retry=protection_cfg.get("retry_attempts", 3),
+                        backoff_seconds=protection_cfg.get(
+                            "retry_backoff_seconds", [1, 2, 4]
+                        ),
+                        stop_limit_slip_pct=protection_cfg.get(
+                            "stop_limit_slip_pct", 0.005
+                        ),
+                    )
+                    if prot_result.mode == "polling":
+                        self._notify(
+                            f"⚠️ {pair} protection placement failed — "
+                            "falling back to local polling"
+                        )
+                    elif prot_result.mode == "error":
+                        self._notify(
+                            f"🚨 {pair} protection placement returned "
+                            "permanent error — position is unprotected, "
+                            "manual intervention required"
+                        )
+                        prot_result = prot.ProtectionResult(mode="polling")
+                else:
+                    prot_result = prot.ProtectionResult(mode="polling")
+
+                # ── Update the journal row with real protection state ──
+                # (No-op if mode is still polling, but harmless.)
+                self._update_protection_state(
+                    conn, pair,
+                    prot_result.mode,
+                    prot_result.order_id,
+                    prot_result.child_ids,
+                )
+
+                # ── Build in-memory position last ──
                 self.positions[pair] = {
                     "entry_time": datetime.now().isoformat(),
                     "entry_price": filled_price,
                     "stop_loss": levels["stop_loss"],
                     "target": levels.get("target"),
-                    "position_size": order.get("filled", size),
+                    "position_size": filled_size,
                     "is_ath": levels.get("is_ath", False),
                     "order_id": order_id,
                     "features": features,
+                    "protection_mode": prot_result.mode,
+                    "protection_order_id": prot_result.order_id,
+                    "protection_child_ids": prot_result.child_ids,
                 }
-                print(f"     ✅ FILLED @ {filled_price:,.0f}")
+                print(f"     ✅ FILLED @ {filled_price:,.0f} "
+                      f"(protection: {prot_result.mode})")
 
                 target_str = f"{levels['target']:,.0f}" if levels.get("target") else "ATH trailing"
                 self._notify(
@@ -360,12 +542,9 @@ class LiveTrader:
                     f"Entry: {filled_price:,.0f}\n"
                     f"Stop loss: {levels['stop_loss']:,.0f}\n"
                     f"Target: {target_str}\n"
-                    f"Size: {order.get('filled', size):.8f}"
+                    f"Size: {filled_size:.8f}\n"
+                    f"Protection: {prot_result.mode}"
                 )
-
-                # Log to journal
-                self._log_entry(conn, pair, filled_price, levels,
-                                order.get("filled", size), features)
 
             else:
                 # Cancel unfilled order
@@ -450,24 +629,56 @@ class LiveTrader:
             print(f"     ❌ Sell failed: {e}")
             self._notify(f"⚠️ SELL FAILED for {pair}: {e}")
 
-    def _log_entry(self, conn, pair, price, levels, size, features):
+    def _update_protection_state(self, conn, pair, protection_mode,
+                                  protection_order_id, protection_child_ids):
+        """Persist the three protection columns to the open trade_journal
+        row for this pair. Called when protection state transitions
+        between buy and exit (e.g., LostProtection downgrade, trailing
+        stop replace, Naked re-placement)."""
+        cur = conn.cursor()
+        child_ids_json = (json.dumps(list(protection_child_ids))
+                          if protection_child_ids else None)
+        cur.execute("""
+            UPDATE trade_journal SET
+                protection_mode=?,
+                protection_order_id=?,
+                protection_child_ids=?
+            WHERE mode='live' AND pair=? AND strategy=?
+                AND exit_time IS NULL
+            ORDER BY created_at DESC LIMIT 1
+        """, (
+            protection_mode, protection_order_id, child_ids_json,
+            pair, self.strategy,
+        ))
+        conn.commit()
+
+    def _log_entry(self, conn, pair, price, levels, size, features,
+                   protection_mode, protection_order_id, protection_child_ids):
         """Log trade entry to journal."""
         cur = conn.cursor()
+        child_ids_json = (json.dumps(list(protection_child_ids))
+                          if protection_child_ids else None)
         cur.execute("""
             INSERT INTO trade_journal
             (mode, pair, strategy, direction, entry_time, entry_price,
-             stop_loss, take_profit, position_size, features_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             stop_loss, take_profit, position_size, features_json,
+             protection_mode, protection_order_id, protection_child_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             "live", pair, self.strategy, "long",
             datetime.now().isoformat(), price,
             levels["stop_loss"], levels.get("target"), size,
-            json.dumps(features)
+            json.dumps(features),
+            protection_mode, protection_order_id, child_ids_json,
         ))
         conn.commit()
 
-    def _log_exit(self, conn, pair, price, reason, pnl_pct, pnl_abs, pos):
-        """Update trade journal with exit info."""
+    def _log_exit(self, conn, pair, price, reason, pnl_pct, pnl_abs, pos,
+                  exit_time: str | None = None):
+        """Update trade journal with exit info. exit_time defaults to
+        wall-clock when not provided; for exchange-protected fills,
+        callers should pass the FillResult.time / ClosedWhileDown.time
+        so the audit trail records the actual exchange fill time."""
         cur = conn.cursor()
         cur.execute("""
             UPDATE trade_journal SET
@@ -477,36 +688,141 @@ class LiveTrader:
                 AND exit_time IS NULL
             ORDER BY created_at DESC LIMIT 1
         """, (
-            datetime.now().isoformat(), price, reason,
+            exit_time or datetime.now().isoformat(), price, reason,
             pnl_pct, pnl_abs, pair, self.strategy
         ))
         conn.commit()
 
     def _restore_positions(self):
-        """Restore open positions from DB on startup."""
+        """Restore open positions from DB on startup. For positions
+        protected by exchange-side OCO/stop, reconcile state with the
+        exchange (still active / closed-while-down / naked)."""
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("""
             SELECT pair, entry_time, entry_price, stop_loss, take_profit,
-                   position_size, features_json
+                   position_size, features_json,
+                   protection_mode, protection_order_id, protection_child_ids
             FROM trade_journal
             WHERE mode='live' AND strategy=? AND exit_time IS NULL
         """, (self.strategy,))
         rows = cur.fetchall()
+
         for row in rows:
-            self.positions[row["pair"]] = {
+            # `is_ath` is not persisted, but it's equivalent to
+            # `protection_mode == "stop_only"` by construction —
+            # stop-only protection is only used for ATH-breakout
+            # positions. This keeps the trailing ratchet working
+            # after a restart.
+            protection_mode = row["protection_mode"]
+            child_ids_raw = row["protection_child_ids"]
+            try:
+                child_ids = (tuple(json.loads(child_ids_raw))
+                             if child_ids_raw else None)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"  ⚠️ {row['pair']} has malformed "
+                      f"protection_child_ids ({e}); treating as None")
+                child_ids = None
+
+            pos = {
                 "entry_time": row["entry_time"],
                 "entry_price": row["entry_price"],
                 "stop_loss": row["stop_loss"],
                 "target": row["take_profit"],
                 "position_size": row["position_size"],
-                "is_ath": False,
+                "is_ath": protection_mode == "stop_only",
                 "features": json.loads(row["features_json"] or "{}"),
+                "protection_mode": protection_mode,
+                "protection_order_id": row["protection_order_id"],
+                "protection_child_ids": child_ids,
             }
+            pair = row["pair"]
+
+            if protection_mode in ("oco", "stop_only"):
+                self._reconcile_position(pair, pos, conn)
+            else:
+                # polling mode or legacy NULL — restore as today.
+                self.positions[pair] = pos
+
         conn.close()
         if self.positions:
             print(f"  Restored {len(self.positions)} open positions: "
                   f"{', '.join(self.positions.keys())}")
+
+    def _reconcile_position(self, pair, pos, conn):
+        """Check exchange state for a restored position. Three outcomes:
+          Active           — adopt the open order id; restore position.
+          ClosedWhileDown  — close the position in DB with real exit;
+                             do not restore.
+          Naked            — re-place protection (or fall back to polling).
+        """
+        try:
+            result = prot.reconcile_on_restart(self.exchange, pair, pos)
+        except Exception as e:
+            print(f"  ⚠️ Could not reconcile {pair}: {e}. "
+                  "Falling back to polling.")
+            pos["protection_mode"] = "polling"
+            pos["protection_order_id"] = None
+            pos["protection_child_ids"] = None
+            self._update_protection_state(
+                conn, pair, "polling", None, None
+            )
+            self.positions[pair] = pos
+            return
+
+        if isinstance(result, prot.Active):
+            pos["protection_order_id"] = result.order_id
+            pos["protection_child_ids"] = result.child_ids
+            self.positions[pair] = pos
+            print(f"  Adopted active {pos['protection_mode']} for {pair} "
+                  f"(order {result.order_id})")
+
+        elif isinstance(result, prot.ClosedWhileDown):
+            print(f"  ℹ️ {pair} closed while bot was down: "
+                  f"{result.reason} @ {result.price:,.0f}")
+            self._notify(
+                f"ℹ️ {pair} closed while bot was down: "
+                f"{result.reason} @ {result.price:,.0f} (at {result.time})"
+            )
+            pnl_per_unit = result.price - pos["entry_price"]
+            pnl_absolute = pnl_per_unit * pos["position_size"]
+            pnl_pct = pnl_per_unit / pos["entry_price"]
+            self._log_exit(conn, pair, result.price, result.reason,
+                           pnl_pct, pnl_absolute, pos,
+                           exit_time=result.time or None)
+            # Do NOT add to self.positions — it's closed.
+
+        elif isinstance(result, prot.Naked):
+            print(f"  ⚠️ {pair} restored without protection — re-placing")
+            self._notify(f"⚠️ {pair} restored without protection — re-placing")
+
+            protection_cfg = self.config.get("risk", {}).get("protection", {})
+            prot_result = prot.place_protection(
+                self.exchange, pair, pos["position_size"],
+                stop_loss=pos["stop_loss"],
+                target=pos["target"],
+                is_ath=pos["is_ath"],
+                strategy=self.strategy,
+                retry=protection_cfg.get("retry_attempts", 3),
+                backoff_seconds=protection_cfg.get(
+                    "retry_backoff_seconds", [1, 2, 4]
+                ),
+                stop_limit_slip_pct=protection_cfg.get(
+                    "stop_limit_slip_pct", 0.005
+                ),
+            )
+            pos["protection_mode"] = (
+                prot_result.mode if prot_result.mode != "error" else "polling"
+            )
+            pos["protection_order_id"] = prot_result.order_id
+            pos["protection_child_ids"] = prot_result.child_ids
+            self._update_protection_state(
+                conn, pair,
+                pos["protection_mode"],
+                pos["protection_order_id"],
+                pos["protection_child_ids"],
+            )
+            self.positions[pair] = pos
 
     def _notify(self, message: str):
         """Send Telegram notification."""
@@ -619,6 +935,19 @@ def preflight_check(config: dict = None) -> bool:
         checks.append((f"Paper trades logged ({paper_count})", paper_count >= 10))
     except Exception:
         checks.append(("Paper trades logged", False))
+
+    # 8. CCXT exposes the OCO endpoint
+    protection_cfg = config.get("risk", {}).get("protection", {})
+    if protection_cfg.get("enabled", True):
+        try:
+            from src.data.downloader import create_exchange
+            ex = create_exchange(config, authenticated=False)
+            has_oco = hasattr(ex, "privatePostOpenV1OrdersOco")
+            has_stop = hasattr(ex, "private_post_open_v1_orders")
+            checks.append(("CCXT supports Tokocrypto OCO", has_oco))
+            checks.append(("CCXT supports Tokocrypto stop-loss-limit", has_stop))
+        except Exception as e:
+            checks.append((f"CCXT OCO capability check ({e})", False))
 
     # Print results
     all_pass = True

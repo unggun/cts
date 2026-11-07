@@ -45,6 +45,11 @@ python3 -m src.execution.positions --mode paper
 python3 -m src.execution.positions --strategy rsi_vwap
 python3 -m src.execution.positions --json
 
+# Check live-trading readiness (per strategy: READY / WATCH / BLOCKED / INSUFFICIENT_DATA)
+python3 -m src.execution.live_readiness
+python3 -m src.execution.live_readiness --strategy dbw
+python3 -m src.execution.live_readiness --json
+
 # Telegram bot (listens for /positions, /equity, /help commands)
 python3 -m src.execution.telegram_bot
 
@@ -80,6 +85,12 @@ Strategy parameters are versioned in `strategy_parameters` table. The auto-learn
 
 `src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Rules are auto-refreshed each learning cycle.
 
+Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`). If filters leave fewer than `min_trades_for_analysis` trades, the cycle deactivates them and re-runs the backtest unfiltered (`filters_starved_cycle`); in `--dry-run` it re-runs unfiltered in memory only.
+
+### Costs and Paper/Backtest Parity
+
+Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per side (`src/backtest/costs.py`). The paper trader enters only on closed candles (`src/data/candles.py`) and uses the same ATR trailing stop as the engine (`src/backtest/exits.py`), persisting ratcheted stops to `trade_journal`. The live trader still acts on the forming candle and does not trail fixed-target (OCO) positions.
+
 ### Confidence-Gated Updates
 
 Claude returns a confidence level (low/medium/high). When confidence is "low", parameter updates are skipped to prevent degradation from uncertain analysis. Filter rules are still saved regardless of confidence.
@@ -98,13 +109,38 @@ Seven tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_para
 
 The learning system only uses `backtest_trades` for analysis, not paper/live trades. Paper/live trading validates the strategy in real-time conditions.
 
+### Exchange-Side Protection (OCO / Stop-Loss-Limit)
+
+`src/execution/protection.py` places real protective sell orders on Tokocrypto
+after a buy fill: an **OCO** for fixed-target strategies, a **STOP_LOSS_LIMIT**
+for Darvas ATH-breakout positions (which trail). Polling-based exits in
+`live_trader._check_exit` are now a fallback path used only when placement
+fails (`protection_mode="polling"`) or for legacy positions.
+
+Protection state is observable via the `protection_mode` column on
+`trade_journal` (`oco` | `stop_only` | `polling` | `simulated`) and via
+`/positions` (CLI) and the Telegram bot.
+
+Master switch: `risk.protection.enabled` in `config.yaml` — set to `false`
+to revert to today's polling-only behavior without code changes.
+
+On bot restart, `_restore_positions` reconciles each restored position with
+the exchange (still active / closed-while-down / naked) and re-places
+protection if it's missing.
+
 ### Position Queries
 
 `src/execution/positions.py` provides a CLI to query open positions from `trade_journal`. Open positions are identified by `exit_time IS NULL`.
 
+### Live-Readiness Check
+
+`src/execution/live_readiness.py` evaluates per-strategy readiness to flip from paper to live trading. Read-only, checks four gates: Monte Carlo verdict/ruin probability, Claude confidence, and current-param paper-trade stats (split around the latest `strategy_parameters.created_at` cutover; trades older than 30 days excluded). Status tiers: `INSUFFICIENT_DATA` (MC sample < 50) → `BLOCKED` → `WATCH` → `READY`. Flipping to live remains manual.
+
+The weekly learning-cycle Telegram summary (`_send_multi_strategy_telegram` in `src/run_learning_cycle.py`) includes a per-strategy status icon and a readiness footer. The Telegram bot's `/readiness` and `/readiness <strategy>` commands expose the same data on demand.
+
 ### Telegram Bot
 
-`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/help`. Run as a systemd service on the VPS.
+`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/readiness`, `/readiness <strategy>`, `/help`. Run as a systemd service on the VPS.
 
 ### Feature Extraction
 

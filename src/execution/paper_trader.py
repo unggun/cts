@@ -18,6 +18,9 @@ from src.config import load_config
 from src.data.downloader import create_exchange
 from src.data.database import get_connection, init_db, load_ohlcv, upsert_ohlcv, load_latest_parameters
 from src.backtest.engine import STRATEGY_REGISTRY
+from src.backtest.costs import net_pnl, trading_costs
+from src.backtest.exits import trail_stop
+from src.data.candles import last_closed_index
 from src.indicators.features import extract_features
 from src.learning.filter_rules import load_active_filters, apply_filters
 
@@ -47,7 +50,9 @@ class PaperTrader:
 
         # State
         self.positions = {}  # pair -> position dict
-        self.capital = self.config.get("simulation", {}).get("initial_capital", 10_000_000)
+        self._last_signal_bar = {}  # pair -> closed candle already acted on
+        self.costs = trading_costs(self.config)
+        self.capital =self.config.get("simulation", {}).get("initial_capital", 10_000_000)
         self.initial_capital = self.capital
 
         # Restore persisted positions from DB
@@ -143,8 +148,11 @@ class PaperTrader:
 
         last_idx = len(df) - 1
         current_price = df.iloc[last_idx]["close"]
+        strategy_params = self.params.get(self.strategy, self.params)
 
         # ── Check exit for open position ──
+        # Exits use the live (possibly still-forming) candle's high/low,
+        # like a resting stop/target order would.
         if pair in self.positions:
             pos = self.positions[pair]
             low = df.iloc[last_idx]["low"]
@@ -160,29 +168,48 @@ class PaperTrader:
                 exit_price = pos["target"]
                 exit_reason = "target"
 
-            # ATH trailing stop
-            if pos.get("is_ath") and exit_price is None:
-                from src.indicators.features import _atr
-                atr = _atr(df["high"].values, df["low"].values, df["close"].values, 14)
-                trailing = high - (2 * atr)
-                if trailing > pos["stop_loss"]:
-                    pos["stop_loss"] = trailing
-
             if exit_price:
                 self._close_position(conn, pair, exit_price, exit_reason)
+            else:
+                # Same ATR trailing stop as the backtest engine, for all positions.
+                from src.indicators.features import _atr
+                pos["highest_high"] = max(pos.get("highest_high", pos["entry_price"]), high)
+                atr = _atr(df["high"].values, df["low"].values, df["close"].values, 14)
+                trail_mult = strategy_params.get("trailing_atr_multiplier", 3.0)
+                new_stop = trail_stop(pos["entry_price"], pos["stop_loss"],
+                                      pos["highest_high"], atr, trail_mult)
+                if new_stop > pos["stop_loss"]:
+                    pos["stop_loss"] = new_stop
+                    self._persist_stop(conn, pos)
+                    print(f"  ↗ {pair} trailing stop raised to {new_stop:,.0f}")
 
         # ── Check entry ──
-        if pair not in self.positions:
-            if df.iloc[last_idx].get(signal_col) == "buy":
-                strategy_params = self.params.get(self.strategy, self.params)
-                levels = levels_fn(df, last_idx, strategy_params)
+        # Signals are only acted on once their candle has closed, matching the
+        # backtest; acting on the forming candle lets signals repaint.
+        signal_idx = last_closed_index(df, timeframe)
+        if signal_idx is None:
+            conn.close()
+            return
+        signal_bar = df.index[signal_idx]
+
+        if pair not in self.positions and self._last_signal_bar.get(pair) != signal_bar:
+            if df.iloc[signal_idx].get(signal_col) == "buy":
+                self._last_signal_bar[pair] = signal_bar
+                levels = dict(levels_fn(df, signal_idx, strategy_params))
+                # Fill at the current price, keeping the signal's stop/target.
+                levels["entry"] = current_price
+                levels["risk"] = current_price - levels["stop_loss"]
+                if levels.get("target") is not None and levels["risk"] > 0:
+                    levels["risk_reward"] = (levels["target"] - current_price) / levels["risk"]
 
                 min_rr = strategy_params.get("min_risk_reward", 2.0)
-                if levels["risk_reward"] >= min_rr or levels.get("target") is None:
+                if levels["risk"] <= 0:
+                    print(f"  ⏭️ SKIPPED {pair}: price already below signal stop")
+                elif levels["risk_reward"] >= min_rr or levels.get("target") is None:
                     # Check max positions
                     max_pos = self.params.get("risk", {}).get("max_positions", 3)
                     if len(self.positions) < max_pos:
-                        features = extract_features(df, last_idx)
+                        features = extract_features(df, signal_idx)
 
                         # Apply filter rules
                         if self.filters:
@@ -217,6 +244,7 @@ class PaperTrader:
             "target": levels.get("target"),
             "position_size": position_size,
             "is_ath": levels.get("is_ath", False),
+            "highest_high": levels["entry"],
             "features": features,
         }
 
@@ -225,14 +253,16 @@ class PaperTrader:
         cur.execute("""
             INSERT INTO trade_journal
             (mode, pair, strategy, direction, entry_time, entry_price,
-             stop_loss, take_profit, position_size, features_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             stop_loss, take_profit, position_size, features_json,
+             protection_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             "paper", pair, self.strategy, "long",
             self.positions[pair]["entry_time"], levels["entry"],
             levels["stop_loss"], levels.get("target"), position_size,
-            json.dumps(features)
+            json.dumps(features), "simulated",
         ))
+        self.positions[pair]["id"] = cur.lastrowid
         conn.commit()
 
         target_str = f"{levels['target']:,.0f}" if levels.get("target") else "ATH trail"
@@ -253,9 +283,10 @@ class PaperTrader:
         """Close a paper trading position and journal it."""
         pos = self.positions.pop(pair)
 
-        pnl_per_unit = exit_price - pos["entry_price"]
-        pnl_absolute = pnl_per_unit * pos["position_size"]
-        pnl_pct = pnl_per_unit / pos["entry_price"]
+        pnl_absolute, pnl_pct = net_pnl(
+            pos["entry_price"], exit_price, pos["position_size"],
+            self.costs["fee_pct"], self.costs["slippage_pct"],
+        )
         self.capital += pnl_absolute
 
         emoji = "✅" if pnl_pct > 0 else "❌"
@@ -285,12 +316,20 @@ class PaperTrader:
             f"PnL: {pnl_pct:+.2%} ({pnl_absolute:+,.0f} IDR)"
         )
 
+    def _persist_stop(self, conn, pos: dict):
+        """Save a ratcheted trailing stop so it survives restarts."""
+        if pos.get("id") is None:
+            return
+        conn.execute("UPDATE trade_journal SET stop_loss=? WHERE id=?",
+                     (pos["stop_loss"], pos["id"]))
+        conn.commit()
+
     def _restore_positions(self):
         """Restore open positions from DB on startup."""
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("""
-            SELECT pair, entry_time, entry_price, stop_loss, take_profit,
+            SELECT id, pair, entry_time, entry_price, stop_loss, take_profit,
                    position_size, features_json
             FROM trade_journal
             WHERE mode='paper' AND strategy=? AND exit_time IS NULL
@@ -298,6 +337,10 @@ class PaperTrader:
         rows = cur.fetchall()
         for row in rows:
             self.positions[row["pair"]] = {
+                "id": row["id"],
+                # The persisted stop already holds any trailing ratchet, so
+                # restarting the high-water mark at entry is safe.
+                "highest_high": row["entry_price"],
                 "entry_time": row["entry_time"],
                 "entry_price": row["entry_price"],
                 "stop_loss": row["stop_loss"],

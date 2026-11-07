@@ -90,6 +90,18 @@ def check_quality_gates(all_results: dict,
     return len(failures) == 0, failures
 
 
+def filters_starved_cycle(all_results: dict, min_trades: int) -> bool:
+    """True when filter rules, not the strategy, are why a cycle has too few trades.
+
+    Without this check the loop deadlocks: filters block most signals, the
+    analyzer needs more trades than survive, Claude is never called, and the
+    filters never get revised.
+    """
+    total = sum(r.get("total_trades", 0) for r in all_results.values())
+    filtered = sum(r.get("filtered_trades", 0) for r in all_results.values())
+    return total < min_trades and filtered > 0
+
+
 def reset_filter_rules(strategy: str):
     """Deactivate all filter rules for a strategy."""
     conn = get_connection()
@@ -160,13 +172,28 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         results = run_backtest(strategy, pair, timeframe, config)
         all_results[pair] = results
 
+    min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
+    if filters_starved_cycle(all_results, min_trades):
+        kept = sum(r.get("total_trades", 0) for r in all_results.values())
+        skipped = sum(r.get("filtered_trades", 0) for r in all_results.values())
+        print(f"\n  ⚠️ Filter rules left only {kept} trades ({skipped} signals skipped, "
+              f"need {min_trades}). Re-running the backtest unfiltered so the "
+              f"loop can re-learn them.")
+        if dry_run:
+            print("  (Dry run — filters stay active in the DB)")
+        else:
+            reset_filter_rules(strategy)
+        for pair in pairs:
+            print(f"\n  Re-backtesting {pair} without filters...")
+            all_results[pair] = run_backtest(strategy, pair, timeframe, config,
+                                             use_filters=False)
+
     # Collect this cycle's run_ids so downstream analysis only sees
     # trades produced in this cycle (not the full backtest_trades history).
     cycle_run_ids = [r["run_id"] for r in all_results.values() if r.get("run_id")]
 
     # Check if we have enough trades
     total_trades = sum(r.get("total_trades", 0) for r in all_results.values())
-    min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
 
     if total_trades < min_trades:
         print(f"\n  Only {total_trades} trades generated (need {min_trades}). "
@@ -493,16 +520,38 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
     try:
         import requests
         from src.learning.parameter_store import get_performance_trend
+        from src.execution.live_readiness import build_report, short_summary
 
         lines = ["📊 *Multi-Strategy Weekly Summary*\n"]
 
+        status_counts = {"READY": 0, "WATCH": 0, "BLOCKED": 0, "INSUFFICIENT_DATA": 0}
+
         for strategy in strategies:
             trend = get_performance_trend(strategy)
+
+            try:
+                report = build_report(strategy)
+                icon_label = short_summary(report)
+                status_counts[report["status"]] += 1
+            except Exception:
+                report = None
+                icon_label = ""
+
             if trend:
                 latest = trend[-1]
                 wr = latest.get("win_rate_display", "?")
-                lines.append(f"*{strategy}*: WR {wr} (v{latest['version']})")
+                suffix = f" {icon_label.split()[0]}" if icon_label else ""
+                lines.append(f"*{strategy}*: WR {wr} (v{latest['version']}){suffix}")
+            elif report is not None:
+                # No trend yet but readiness was computed — still show the row
+                lines.append(f"*{strategy}*: {icon_label}")
 
+        lines.append(
+            f"\nReadiness: {status_counts['READY']} READY | "
+            f"{status_counts['WATCH']} WATCH | "
+            f"{status_counts['BLOCKED']} BLOCKED | "
+            f"{status_counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA"
+        )
         lines.append("\n_Run parameter\\_store --trend for full history_")
 
         message = "\n".join(lines)
