@@ -105,3 +105,14 @@ def test_prompt_shows_active_filters_and_scored_rules():
     assert "Skip when hour >= 12" in prompt
     assert "Skip when atr >= 0.05: removes 60 of 160 trades" in prompt
     assert "- none" in build_analysis_prompt(findings, {}, {}, "macd", active_filters=[])
+
+
+def test_reported_evidence_matches_the_stored_rule():
+    """A cutoff with more than 6 significant digits is scored as stored."""
+    good = [({"x": 0.0}, 0.01) for _ in range(100)]
+    bad = [({"x": 50.1234567}, -0.01) for _ in range(60)]
+    feats, pnl = _interleave(good, bad)
+    rules = search_rules(feats, pnl, limit=3, cfg=CFG)
+    live = [dict(r, rule_type="skip") for r in parse_analyzer_filters(rules)]
+    skipped = sum(apply_filters(f, live)[0] for f in feats.to_dict("records"))
+    assert rules and skipped == rules[0]["removed"]
