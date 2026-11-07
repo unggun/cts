@@ -6,6 +6,7 @@ from src.config import load_config
 from src.data.database import get_connection, init_db, load_ohlcv, load_latest_parameters
 from src.backtest.engine import BacktestEngine
 from src.backtest.costs import trading_costs
+from src.indicators.regime import regime_pair
 
 
 def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
@@ -54,7 +55,11 @@ def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
     initial_capital = config.get("simulation", {}).get("initial_capital", 10_000_000)
     engine = BacktestEngine(strategy, params, initial_capital,
                             costs=trading_costs(config), use_filters=use_filters)
-    results = engine.run(df, pair, timeframe)
+    btc_pair = regime_pair(config)
+    btc_df = df if pair == btc_pair else load_ohlcv(conn, btc_pair, timeframe)
+    if end is not None and not btc_df.empty:
+        btc_df = btc_df[btc_df.index < end]
+    results = engine.run(df, pair, timeframe, btc_df=btc_df)
 
     # Save trades
     engine.save_to_db()

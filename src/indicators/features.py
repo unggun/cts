@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 from typing import Optional
 
+from src.indicators.regime import REGIME_COLUMNS
+
 
 def extract_features(df: pd.DataFrame, entry_idx: int,
                      exit_idx: Optional[int] = None) -> dict:
@@ -169,6 +171,14 @@ def extract_features(df: pd.DataFrame, entry_idx: int,
         else:
             break
     features["consecutive_candles"] = consec * direction
+
+    # ── 9. MARKET REGIME (higher timeframes, BTC) ──
+    # Present when add_regime_columns() ran on df; NaN during warm-up is left out.
+    for col in REGIME_COLUMNS:
+        if col in df.columns:
+            val = df[col].iat[i]
+            if pd.notna(val):
+                features[col] = float(val)
 
     return features
 

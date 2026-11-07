@@ -152,6 +152,8 @@ The weekly learning-cycle Telegram summary (`_send_multi_strategy_telegram` in `
 
 `src/indicators/features.py` extracts 40+ features per trade signal (volume ratios, ATR, RSI, moving averages, etc.) stored as JSON in `backtest_trades.features_json`. These features drive the winner/loser analysis in `src/learning/analyzer.py`.
 
+**Market regime features** (`src/indicators/regime.py`): `st_4h_up`, `st_1d_up` (Supertrend 10/3 direction), `adx_4h` (ADX 14), `btc_st_4h_up` and `btc_return_24h`. They come from 4h/daily candles built from the 1h data, and a 1h bar only sees higher-timeframe candles that had closed by its own close (no look-ahead). A value is missing (NaN) when its candles are stale or have a gap, and the 4h features are missing on timeframes coarser than 4h. The BTC pair is `trading.regime_pair` (default `BTC/IDR`); the paper trader refreshes it first each cycle, and promotion rejects a `btc_*` rule when its candles are missing. The engine, runner, promotion and paper trader all add them; the live trader does not yet, so a regime filter rule doesn't apply to live trades (`apply_filters` ignores missing features). They are ordinary features: the rule search and Claude can use them, and promotion decides.
+
 ## VPS Deployment
 
 The system runs on a VPS with systemd services:
