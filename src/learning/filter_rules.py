@@ -201,6 +201,14 @@ def parse_analyzer_filters(suggested_filters: list[dict]) -> list[dict]:
     """Convert analyzer's suggested_filters to structured format."""
     structured = []
     for sf in suggested_filters:
+        if sf.get("feature") and sf.get("operator") and sf.get("threshold") is not None:
+            # Already structured (rule_search output), including "==" rules.
+            structured.append({
+                "feature": sf["feature"], "operator": sf["operator"],
+                "threshold": sf["threshold"], "type": sf.get("type", "skip"),
+                "effect_size": sf.get("effect_size"), "rationale": sf.get("rationale", ""),
+            })
+            continue
         rule_text = sf.get("rule", "")
         feature = sf.get("feature", "")
 

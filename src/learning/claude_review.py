@@ -12,6 +12,7 @@ import json
 from src.config import load_config
 from src.data.database import get_connection, load_latest_parameters
 from src.learning.analyzer import analyze_winners_vs_losers, analyze_time_patterns
+from src.learning.filter_rules import load_active_filters
 
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
@@ -71,7 +72,8 @@ def format_history(history: list) -> str:
 def build_analysis_prompt(findings: dict, time_patterns: dict,
                           current_params: dict, strategy: str,
                           sim_results: dict = None, history: list = None,
-                          holdout_days: int = None, promotion_rule: str = None) -> str:
+                          holdout_days: int = None, promotion_rule: str = None,
+                          active_filters: list = None) -> str:
     """Build the prompt for Claude to analyze trading patterns.
 
     ``promotion_rule`` describes the effective acceptance criteria
@@ -88,7 +90,7 @@ def build_analysis_prompt(findings: dict, time_patterns: dict,
 {json.dumps(current_params, indent=2)}
 ```
 
-## Backtest Analysis Findings
+## Backtest Analysis Findings (all signals, no filters applied)
 - Total trades: {findings.get('total_trades', 0)}
 - Win rate: {findings.get('overall_win_rate', 0):.1%}
 - Average win: {findings.get('avg_win_pct', 0):.2%}
@@ -116,11 +118,21 @@ Top features by effect size:
                       f"losers avg={analysis['loser_mean']}, "
                       f"effect_size={analysis['effect_size']}\n")
 
+    if active_filters is not None:
+        prompt += "\n## Currently Active Filters (the version your proposal must beat)\n"
+        if active_filters:
+            for f in active_filters:
+                prompt += f"- Skip when {f['feature']} {f['operator']} {f['threshold']}\n"
+        else:
+            prompt += "- none\n"
+
     # Add suggested filters
     if findings.get("suggested_filters"):
-        prompt += "\n## Auto-Generated Filter Suggestions\n"
+        prompt += ("\n## Skip Rules Found by the Analyzer\n"
+                   "Chosen one at a time on the trades above by how much they raise expectancy "
+                   "per trade after fees (each holds in both halves of the data):\n")
         for f in findings["suggested_filters"][:10]:
-            prompt += f"- {f['rule']} (effect: {f['effect_size']}, reason: {f['rationale']})\n"
+            prompt += f"- Skip when {f['rule']}: {f['rationale']}\n"
 
     # Add warnings
     if findings.get("warnings"):
@@ -255,6 +267,7 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         findings, time_patterns, current_params,
         strategy or "darvas", sim_results, history=history,
         holdout_days=holdout_days, promotion_rule=describe_rule(promotion_config(config)),
+        active_filters=load_active_filters(strategy or "darvas"),
     )
 
     if dry_run:

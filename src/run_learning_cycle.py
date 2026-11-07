@@ -94,18 +94,6 @@ def check_quality_gates(all_results: dict,
     return len(failures) == 0, failures
 
 
-def filters_starved_cycle(all_results: dict, min_trades: int) -> bool:
-    """True when filter rules, not the strategy, are why a cycle has too few trades.
-
-    Without this check the loop deadlocks: filters block most signals, the
-    analyzer needs more trades than survive, Claude is never called, and the
-    filters never get revised.
-    """
-    total = sum(r.get("total_trades", 0) for r in all_results.values())
-    filtered = sum(r.get("filtered_trades", 0) for r in all_results.values())
-    return total < min_trades and filtered > 0
-
-
 def _verify_and_promote(strategy: str, review: dict, findings: dict, config: dict,
                         trade_start, dry_run: bool) -> dict:
     """Backtest Claude's proposal against the current version on the holdout.
@@ -211,54 +199,53 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     print(f"  Train window ends {trade_start:%Y-%m-%d %H:%M} UTC "
           f"(last {holdout_days} days held out for validation)")
 
+    # Two train backtests: with the active filters (the deployed version, for
+    # reports, quality gates and Monte Carlo) and without them (what the
+    # analyzer and Claude learn from, so a filter's blind spots stay visible).
     all_results = {}
     for pair in pairs:
         print(f"\n  Backtesting {pair}...")
         results = run_backtest(strategy, pair, timeframe, config, end=trade_start)
         all_results[pair] = results
 
-    min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
-    if filters_starved_cycle(all_results, min_trades):
-        kept = sum(r.get("total_trades", 0) for r in all_results.values())
-        skipped = sum(r.get("filtered_trades", 0) for r in all_results.values())
-        # Analyze the unfiltered signals so the loop can re-learn filters. The
-        # active filters stay in place (they are the incumbent the proposal is
-        # judged against) until a promotion replaces them.
-        print(f"\n  ⚠️ Filter rules left only {kept} trades ({skipped} signals skipped, "
-              f"need {min_trades}). Re-running the backtest unfiltered so the "
-              f"loop can re-learn them.")
+    if any(r.get("filtered_trades", 0) > 0 for r in all_results.values()):
+        unfiltered = {}
         for pair in pairs:
-            print(f"\n  Re-backtesting {pair} without filters...")
-            all_results[pair] = run_backtest(strategy, pair, timeframe, config,
-                                             use_filters=False, end=trade_start)
+            print(f"\n  Backtesting {pair} without filters (for analysis)...")
+            unfiltered[pair] = run_backtest(strategy, pair, timeframe, config,
+                                            use_filters=False, end=trade_start)
+    else:
+        unfiltered = all_results     # no signal was filtered: same trades
 
     # Collect this cycle's run_ids so downstream analysis only sees
     # trades produced in this cycle (not the full backtest_trades history).
     cycle_run_ids = [r["run_id"] for r in all_results.values() if r.get("run_id")]
+    analysis_run_ids = [r["run_id"] for r in unfiltered.values() if r.get("run_id")]
 
     # Check if we have enough trades
-    total_trades = sum(r.get("total_trades", 0) for r in all_results.values())
+    min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
+    total_trades = sum(r.get("total_trades", 0) for r in unfiltered.values())
 
     if total_trades < min_trades:
         print(f"\n  Only {total_trades} trades generated (need {min_trades}). "
               f"Consider adding more pairs or longer history.")
         if total_trades == 0:
             print("  Stopping cycle — no trades to analyze.")
-            _send_zero_trade_telegram(config, strategy, all_results)
+            _send_zero_trade_telegram(config, strategy, unfiltered)
             return
 
     # ── Step 3: Analyze patterns ──
-    print(f"\n[3/6] Analyzing winner/loser patterns ({total_trades} trades)...")
-    findings = analyze_winners_vs_losers(strategy=strategy, run_ids=cycle_run_ids)
+    print(f"\n[3/6] Analyzing winner/loser patterns ({total_trades} unfiltered trades)...")
+    findings = analyze_winners_vs_losers(strategy=strategy, run_ids=analysis_run_ids)
     print_analysis(findings)
 
-    time_patterns = analyze_time_patterns(strategy=strategy, run_ids=cycle_run_ids)
+    time_patterns = analyze_time_patterns(strategy=strategy, run_ids=analysis_run_ids)
     if "by_day" in time_patterns:
         print("\n  Time patterns found:")
         for day, stats in time_patterns["by_day"].items():
             print(f"    {day}: {stats['win_rate']:.0%} ({stats['trades']} trades)")
 
-    # ── Step 4: Monte Carlo simulation ──
+    # ── Step 4: Monte Carlo simulation (current version, filters on) ──
     print(f"\n[4/6] Running Monte Carlo simulation...")
     sim_results = run_simulation(strategy=strategy, run_ids=cycle_run_ids)
 
@@ -285,7 +272,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         strategy=strategy,
         sim_results=sim_results,
         dry_run=dry_run,
-        run_ids=cycle_run_ids,
+        run_ids=analysis_run_ids,
         history=load_recent_evaluations(strategy, n=3),
         holdout_days=holdout_days,
     )

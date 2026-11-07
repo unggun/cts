@@ -27,8 +27,8 @@ def test_quality_gates_fail_win_rate():
     results = {
         "BTC/IDR": {
             "total_trades": 100,
-            "winners": 40,
-            "win_rate": 0.40,
+            "winners": 30,            # below the 35% default
+            "win_rate": 0.30,
             "profit_factor": 1.8,
             "max_drawdown": 0.15,
         },

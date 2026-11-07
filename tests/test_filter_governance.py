@@ -1,6 +1,5 @@
 """Filter rules must stay few enough that strategies can still trade."""
 from src.learning.filter_rules import select_filters
-from src.run_learning_cycle import filters_starved_cycle
 
 
 def _rule(feature, effect, rule_type="skip", op=">=", thr=1.0):
@@ -33,17 +32,3 @@ def test_select_filters_ignores_non_skip_and_ranks_missing_effect_last():
 def test_select_filters_no_limit_keeps_all_unique():
     rules = [_rule("a", 0.3), _rule("b", 0.2)]
     assert len(select_filters(rules, limit=None)) == 2
-
-
-def test_filters_starved_cycle_detects_saturation():
-    results = {"BTC/IDR": {"total_trades": 3, "filtered_trades": 700},
-               "ETH/IDR": {"total_trades": 2, "filtered_trades": 600}}
-    assert filters_starved_cycle(results, min_trades=30) is True
-
-
-def test_filters_starved_cycle_false_when_enough_trades_or_no_filtering():
-    assert filters_starved_cycle(
-        {"BTC/IDR": {"total_trades": 40, "filtered_trades": 10}}, min_trades=30) is False
-    assert filters_starved_cycle(
-        {"BTC/IDR": {"total_trades": 3, "filtered_trades": 0}}, min_trades=30) is False
-    assert filters_starved_cycle({"BTC/IDR": {}}, min_trades=30) is False

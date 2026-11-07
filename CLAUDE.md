@@ -79,7 +79,7 @@ Strategy parameters are versioned in `strategy_parameters` table. New versions a
 
 ### Auto-Learning Loop
 
-`src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs on the train window → analyze winners/losers → Monte Carlo → Claude review (proposal only) → holdout validation and promotion → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead; it still evaluates the analyzer's filters on the holdout but never promotes. A dry run still writes the train-window `backtest_trades` and the `simulation_results` row; it saves no parameter version, filter change or `learning_sessions` row.
+`src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs on the train window, with the active filters (reports, quality gates, Monte Carlo) and without them (analysis) → analyze the unfiltered winners/losers → Monte Carlo → Claude review (proposal only) → holdout validation and promotion → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead; it still evaluates the analyzer's filters on the holdout but never promotes. A dry run still writes the train-window `backtest_trades` and the `simulation_results` row; it saves no parameter version, filter change or `learning_sessions` row.
 
 ### Propose → Verify → Promote
 
@@ -89,7 +89,9 @@ The newest `learning.promotion.holdout_days` (90) of data are held out from anal
 
 `src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Proposed rule sets only become active when promoted (see Propose → Verify → Promote).
 
-Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`). If filters leave fewer than `min_trades_for_analysis` trades, the cycle re-runs the backtest unfiltered so the analyzer and Claude see the full signal population (`filters_starved_cycle`). The active filters stay in place as the incumbent until a promotion replaces them.
+Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`).
+
+The analyzer learns from the **unfiltered** train trades, so a filter's blind spots stay visible. `src/learning/rule_search.py` picks its skip rules greedily by what they remove: it tries cutoffs at each feature's deciles, and a rule qualifies only if it removes at least `min_removed` (30) trades, the set keeps at least `min_kept_ratio` (50%) of all trades, kept expectancy after costs rises by at least `min_gain` (0.05%), and the gain holds in both chronological halves of the train window. Day/hour/session rules need `time_evidence_mult` (2×) the evidence. Each pick re-scores the rest on the remaining trades. Settings live under `learning.rule_search` (defaults in code). Claude sees these rules with their removal stats, plus the currently active filters.
 
 ### Costs and Paper/Backtest Parity
 
