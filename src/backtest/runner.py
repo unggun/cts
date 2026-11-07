@@ -9,7 +9,8 @@ from src.backtest.costs import trading_costs
 
 
 def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
-                 config: dict = None, use_filters: bool = True) -> dict:
+                 config: dict = None, use_filters: bool = True,
+                 end=None) -> dict:
     """Run a single backtest and return results.
 
     Args:
@@ -29,6 +30,8 @@ def run_backtest(strategy: str, pair: str, timeframe: str = "1h",
 
     # Load data
     df = load_ohlcv(conn, pair, timeframe)
+    if end is not None:
+        df = df[df.index < end]  # train window only; newer data is held out
     if df.empty:
         print(f"No data found for {pair} {timeframe}. Run the downloader first.")
         conn.close()

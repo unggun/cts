@@ -26,6 +26,10 @@ from src.learning.analyzer import analyze_winners_vs_losers, analyze_time_patter
 from src.learning.claude_review import run_claude_review
 from src.learning.parameter_store import print_parameter_history, format_param_diff, print_performance_trend
 from src.learning.filter_rules import init_filter_rules_table
+from src.learning.promotion import (
+    holdout_start, load_recent_evaluations, promotion_config, record_evaluation,
+    run_promotion,
+)
 
 
 def check_quality_gates(all_results: dict,
@@ -102,6 +106,41 @@ def filters_starved_cycle(all_results: dict, min_trades: int) -> bool:
     return total < min_trades and filtered > 0
 
 
+def _verify_and_promote(strategy: str, review: dict, findings: dict, config: dict,
+                        trade_start, dry_run: bool) -> dict:
+    """Backtest Claude's proposal against the current version on the holdout.
+
+    In a dry run there is no proposal; the analyzer's filters alone are
+    evaluated so the holdout comparison can still be inspected.
+    """
+    if not dry_run:
+        if "error" in review or "raw_response" in review:
+            return {"promoted": False, "reason": "no usable proposal from Claude"}
+        if review.get("confidence") == "low":
+            reason = "Claude confidence is low"
+            record_evaluation(review.get("_session_id"), {"promoted": False, "reason": reason})
+            return {"promoted": False, "reason": reason}
+
+    print(f"\n  Validating proposal on holdout (from {trade_start:%Y-%m-%d})...")
+    evaluation = run_promotion(strategy, {} if dry_run else review, findings,
+                               config, trade_start, dry_run=dry_run)
+    inc, cand = evaluation["incumbent"], evaluation["candidate"]
+    print(f"    Current:   {inc['trades']:4d} trades | expectancy {inc['expectancy']:+.3%} "
+          f"| max DD {inc['max_drawdown']:.1%}")
+    print(f"    Candidate: {cand['trades']:4d} trades | expectancy {cand['expectancy']:+.3%} "
+          f"| max DD {cand['max_drawdown']:.1%}")
+    if evaluation.get("promoted"):
+        print(f"  ✅ Promoted as version {evaluation['version']}: {evaluation['reason']}")
+    elif dry_run:
+        verdict = "would promote" if evaluation["would_promote"] else "would not promote"
+        print(f"  (Dry run) {verdict} analyzer-only filters: {evaluation['reason']}")
+    else:
+        print(f"  🛑 Not promoted: {evaluation['reason']}")
+    if not dry_run:
+        record_evaluation(review.get("_session_id"), evaluation)
+    return evaluation
+
+
 def reset_filter_rules(strategy: str):
     """Deactivate all filter rules for a strategy."""
     conn = get_connection()
@@ -165,11 +204,17 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     print("\n[2/6] Running backtest...")
     pairs = config["trading"]["pairs"]
     timeframe = config["trading"]["timeframes"][0]
+    # The newest data is held out: analysis and Claude only see the train
+    # window, and proposals are judged on the holdout (promotion.py).
+    trade_start = holdout_start(config)
+    holdout_days = promotion_config(config)["holdout_days"]
+    print(f"  Train window ends {trade_start:%Y-%m-%d %H:%M} UTC "
+          f"(last {holdout_days} days held out for validation)")
 
     all_results = {}
     for pair in pairs:
         print(f"\n  Backtesting {pair}...")
-        results = run_backtest(strategy, pair, timeframe, config)
+        results = run_backtest(strategy, pair, timeframe, config, end=trade_start)
         all_results[pair] = results
 
     min_trades = config.get("learning", {}).get("min_trades_for_analysis", 30)
@@ -186,7 +231,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         for pair in pairs:
             print(f"\n  Re-backtesting {pair} without filters...")
             all_results[pair] = run_backtest(strategy, pair, timeframe, config,
-                                             use_filters=False)
+                                             use_filters=False, end=trade_start)
 
     # Collect this cycle's run_ids so downstream analysis only sees
     # trades produced in this cycle (not the full backtest_trades history).
@@ -218,12 +263,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     print(f"\n[4/6] Running Monte Carlo simulation...")
     sim_results = run_simulation(strategy=strategy, run_ids=cycle_run_ids)
 
-    # ── Quality gates ──
-    # Skip gates on first run (no saved parameters yet) — allow initial tuning
-    conn = get_connection()
-    has_prior_params = load_latest_parameters(conn, strategy) is not None
-    conn.close()
-
+    # ── Quality gates (reported; promotion below decides what changes) ──
     gate_cfg = config.get("learning", {})
     passed, gate_failures = check_quality_gates(
         all_results,
@@ -234,28 +274,9 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         min_expectancy=gate_cfg.get("min_expectancy", 0.0),
     )
     if not passed:
-        if not has_prior_params:
-            print("\n  ⚠️ Quality gates FAILED (but first run — allowing initial tuning):")
-            for f in gate_failures:
-                print(f"    - {f}")
-            passed = True  # Allow first-run tuning
-        else:
-            print("\n  ⚠️ Quality gates FAILED:")
-            for f in gate_failures:
-                print(f"    - {f}")
-            print("  Parameter updates will be blocked this cycle.")
-
-    # ── Monte Carlo gate ──
-    mc_fragile = (sim_results and sim_results.get("verdict") == "FRAGILE")
-    if mc_fragile and passed:
-        if not has_prior_params:
-            print("\n  ⚠️ Monte Carlo verdict is FRAGILE (but first run — allowing initial tuning).")
-            print("    Claude will save parameters so stops/filters can be improved.")
-            # Keep passed = True for first run
-        else:
-            print("\n  ⚠️ Monte Carlo verdict is FRAGILE — parameter updates will be blocked.")
-            print("    (Filter rules will still be saved.)")
-            passed = False
+        print("\n  ⚠️ Quality gates FAILED (current version is not live-ready):")
+        for f in gate_failures:
+            print(f"    - {f}")
 
     # ── Step 5: Claude review ──
     print(f"\n[5/6] Running Claude AI review...")
@@ -265,9 +286,14 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         strategy=strategy,
         sim_results=sim_results,
         dry_run=dry_run,
-        block_param_updates=not passed,
         run_ids=cycle_run_ids,
+        history=load_recent_evaluations(strategy, n=3),
+        holdout_days=holdout_days,
     )
+
+    # ── Step 5b: Verify the proposal on held-out data, promote if better ──
+    review["promotion"] = _verify_and_promote(strategy, review, findings, config,
+                                              trade_start, dry_run)
 
     # ── Step 6: Summary ──
     print(f"\n[6/6] Cycle complete.")
@@ -418,6 +444,23 @@ def _send_zero_trade_telegram(config: dict, strategy: str, results: dict):
         print(f"  Zero-trade Telegram notification failed: {e}")
 
 
+def _promotion_lines(strategy: str, review: dict) -> list:
+    """Telegram lines describing the holdout verdict on Claude's proposal."""
+    ev = review.get("promotion") if isinstance(review, dict) else None
+    if not ev:
+        return []
+    reason = ev.get("reason", "").replace("_", "\\_")
+    if ev.get("promoted"):
+        lines = [f"\n✅ *Promoted v{ev.get('version')}* (holdout): {reason}"]
+        param_diff = format_param_diff(strategy)
+        if param_diff:
+            lines.append(f"```\n{param_diff}\n```")
+        if ev.get("candidate_filters"):
+            lines.append(f"📋 Filters now: {'; '.join(ev['candidate_filters'])}".replace("_", "\\_"))
+        return lines
+    return [f"\n🛑 Not promoted: {reason}"]
+
+
 def _send_telegram_summary(config: dict, strategy: str, results: dict,
                            sim_results: dict, review: dict):
     """Send a summary notification via Telegram with strategy label and param diff."""
@@ -459,27 +502,8 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
             conf = review["confidence"]
             conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "⚪")
             lines.append(f"\nConfidence: {conf_emoji} {conf}")
-            if conf == "low":
-                lines.append("⚠️ _Parameter update SKIPPED (low confidence)_")
 
-        # Monte Carlo FRAGILE gate — check if params were actually saved
-        # by looking for a parameter diff (which only exists if save happened)
-        param_diff_check = format_param_diff(strategy)
-        if sim_results and sim_results.get("verdict") == "FRAGILE":
-            if param_diff_check:
-                lines.append("⚠️ _Monte Carlo: FRAGILE (first run — params saved for tuning)_")
-            else:
-                lines.append("🛑 _Parameter update BLOCKED (Monte Carlo: FRAGILE)_")
-
-        # Parameter changes diff
-        param_diff = format_param_diff(strategy)
-        if param_diff:
-            lines.append(f"\n*Parameter Changes:*")
-            lines.append(f"```\n{param_diff}\n```")
-
-        # Filter rules count
-        if isinstance(review, dict) and review.get("filter_rules"):
-            lines.append(f"\n📋 {len(review['filter_rules'])} filter rules active")
+        lines.extend(_promotion_lines(strategy, review))
 
         message = "\n".join(lines)
 

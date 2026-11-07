@@ -16,7 +16,10 @@ import pandas as pd
 
 from src.config import load_config
 from src.data.downloader import create_exchange
-from src.data.database import get_connection, init_db, load_ohlcv, upsert_ohlcv, load_latest_parameters
+from src.data.database import (
+    get_connection, init_db, load_ohlcv, upsert_ohlcv, load_latest_parameters,
+    latest_parameter_version,
+)
 from src.backtest.engine import STRATEGY_REGISTRY
 from src.backtest.costs import net_pnl, trading_costs
 from src.backtest.exits import trail_stop
@@ -41,6 +44,7 @@ class PaperTrader:
         if self.params is None:
             self.params = self.config.get("strategy", {}).get(strategy, {})
         self.params["risk"] = self.config.get("risk", {})
+        self.param_version = latest_parameter_version(conn, strategy)
         conn.close()
 
         # Load active filter rules
@@ -85,6 +89,7 @@ class PaperTrader:
 
         while self.running:
             try:
+                self._refresh_learned_state()
                 for pair in pairs:
                     self._process_pair(pair, timeframe)
 
@@ -222,6 +227,29 @@ class PaperTrader:
                         self._open_position(conn, pair, levels, features)
 
         conn.close()
+
+    def _refresh_learned_state(self):
+        """Pick up promoted parameter versions and filter changes without a restart."""
+        conn = get_connection()
+        try:
+            version = latest_parameter_version(conn, self.strategy)
+            if version != self.param_version:
+                params = load_latest_parameters(conn, self.strategy)
+                if params is not None:
+                    params["risk"] = self.config.get("risk", {})
+                    self.params = params
+                    print(f"  🔄 Loaded parameter version {version} for {self.strategy}")
+                    self._notify(f"🔄 *PAPER {self.strategy}*: now trading parameter "
+                                 f"version {version}")
+                self.param_version = version
+        finally:
+            conn.close()
+
+        filters = load_active_filters(self.strategy)
+        key = lambda fs: [(f["feature"], f["operator"], str(f["threshold"])) for f in fs]
+        if key(filters) != key(self.filters):
+            self.filters = filters
+            print(f"  🔄 Filter rules updated ({len(filters)} active)")
 
     def _open_position(self, conn, pair: str, levels: dict, features: dict):
         """Open a paper trading position."""

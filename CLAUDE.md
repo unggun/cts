@@ -75,15 +75,19 @@ All modules run as `python -m src.<module>` from the project root. Config is loa
 
 ### Parameter Versioning
 
-Strategy parameters are versioned in `strategy_parameters` table. The auto-learning loop (`src/learning/claude_review.py`) saves Claude-suggested parameters as new versions via `save_parameters()`. `load_latest_parameters()` retrieves the most recent version for a strategy.
+Strategy parameters are versioned in `strategy_parameters` table. New versions are only saved by promotion (`src/learning/promotion.py`) after a proposal wins on held-out data. `load_latest_parameters()` retrieves the most recent version for a strategy; paper traders reload it automatically when a new version appears.
 
 ### Auto-Learning Loop
 
-`src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs → analyze winners/losers → Monte Carlo → Claude review → save updated parameters → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead.
+`src/run_learning_cycle.py` orchestrates the full cycle: download → backtest all pairs on the train window → analyze winners/losers → Monte Carlo → Claude review (proposal only) → holdout validation and promotion → Telegram notification. The `--dry-run` flag skips the Claude API call and shows the prompt instead; it still evaluates the analyzer's filters on the holdout but saves nothing.
+
+### Propose → Verify → Promote
+
+The newest `learning.promotion.holdout_days` (90) of data are held out from analysis and Claude. Claude's proposal (params + filter set, capped like live filters) and the current version are both backtested on that holdout after costs; the proposal is promoted only if it improves expectancy per trade by `min_expectancy_gain`, keeps at least `min_holdout_trades` and `min_trade_ratio` of the current trades, and doesn't worsen max drawdown by more than `max_drawdown_worsening`. Quality gates and the Monte Carlo verdict are reported but don't block promotion. Each verdict is stored in `learning_sessions.evaluation_json` (and `applied`), and the last 3 are shown to Claude in the next prompt. Design: `docs/superpowers/specs/2026-11-07-walk-forward-promotion-design.md`.
 
 ### Filter Rules
 
-`src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Rules are auto-refreshed each learning cycle.
+`src/learning/filter_rules.py` manages structured trade filters (stored in `filter_rules` table). The analyzer and Claude review both generate filter rules that gate trade entries — trades matching "skip" rules are rejected before opening. Proposed rule sets only become active when promoted (see Propose → Verify → Promote).
 
 Only the strongest `learning.max_filter_rules` (default 3) skip rules are applied, one per feature (`select_filters`). If filters leave fewer than `min_trades_for_analysis` trades, the cycle deactivates them and re-runs the backtest unfiltered (`filters_starved_cycle`); in `--dry-run` it re-runs unfiltered in memory only.
 
@@ -93,7 +97,7 @@ Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per s
 
 ### Confidence-Gated Updates
 
-Claude returns a confidence level (low/medium/high). When confidence is "low", parameter updates are skipped to prevent degradation from uncertain analysis. Filter rules are still saved regardless of confidence.
+Claude returns a confidence level (low/medium/high). When confidence is "low", the proposal is not evaluated or promoted. Filter rules change only through promotion or the filter-saturation reset.
 
 ### Database Schema
 

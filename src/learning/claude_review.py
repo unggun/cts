@@ -10,12 +10,8 @@ findings and uses Claude to:
 import json
 
 from src.config import load_config
-from src.data.database import get_connection, save_parameters, load_latest_parameters
+from src.data.database import get_connection, load_latest_parameters
 from src.learning.analyzer import analyze_winners_vs_losers, analyze_time_patterns
-from src.learning.filter_rules import (
-    init_filter_rules_table, save_filter_rules,
-    parse_analyzer_filters, parse_claude_filter_rules,
-)
 
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
@@ -46,9 +42,31 @@ def extract_review(message) -> dict:
     return {"raw_response": response_text}
 
 
+def format_history(history: list) -> str:
+    """Render past proposals and their holdout outcomes for the prompt."""
+    if not history:
+        return ""
+    out = "\n## Your Previous Proposals and Their Holdout Results (newest first)\n"
+    for h in history:
+        verdict = "PROMOTED" if h["promoted"] else "REJECTED"
+        cand, inc = h.get("candidate", {}), h.get("incumbent", {})
+        out += (f"- {h['created_at']}: {verdict} — {h['reason']} "
+                f"(candidate {cand.get('trades', 0)} trades, exp {cand.get('expectancy', 0):+.3%}; "
+                f"current {inc.get('trades', 0)} trades, exp {inc.get('expectancy', 0):+.3%})\n")
+        changes = ", ".join(f"{c.get('param')}: {c.get('old')}→{c.get('new')}"
+                            for c in h.get("parameter_changes", [])[:6])
+        if changes:
+            out += f"  - changes: {changes}\n"
+        if h.get("filter_rules"):
+            out += f"  - filters: {'; '.join(h['filter_rules'][:4])}\n"
+    out += "Do not re-propose changes that were rejected unless the data now clearly differs.\n"
+    return out
+
+
 def build_analysis_prompt(findings: dict, time_patterns: dict,
                           current_params: dict, strategy: str,
-                          sim_results: dict = None) -> str:
+                          sim_results: dict = None, history: list = None,
+                          holdout_days: int = None) -> str:
     """Build the prompt for Claude to analyze trading patterns."""
 
     prompt = f"""You are a quantitative trading analyst reviewing backtest results for a '{strategy}' strategy on crypto (Tokocrypto exchange, IDR pairs).
@@ -119,6 +137,19 @@ Top features by effect size:
 - Verdict: {sim_results.get('verdict', 'N/A')}
 """
 
+    prompt += format_history(history)
+
+    if holdout_days:
+        prompt += f"""
+## How Your Proposal Is Judged
+The data above excludes the most recent {holdout_days} days. Your updated parameters and
+filter rules are backtested on those unseen {holdout_days} days, after trading fees and
+slippage, against the current version. They replace it only if expectancy per trade improves
+by at least 0.05%, at least 20 trades remain (and at least half of the current version's
+trades), and max drawdown is not more than 5 points worse. Filter rules that remove most
+trades will be rejected. Propose only changes you expect to generalize.
+"""
+
     prompt += """
 ## Your Task
 
@@ -166,8 +197,8 @@ Respond with valid JSON in the following structure:
 
 def run_claude_review(strategy: str = None, run_id: str = None,
                       sim_results: dict = None, dry_run: bool = False,
-                      block_param_updates: bool = False,
-                      run_ids: list = None) -> dict:
+                      run_ids: list = None, history: list = None,
+                      holdout_days: int = None) -> dict:
     """Run a Claude-powered analysis of recent trading performance.
 
     Args:
@@ -175,13 +206,15 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         run_id: Specific backtest run to analyze
         sim_results: Optional Monte Carlo results to include
         dry_run: If True, just build the prompt without calling API
-        block_param_updates: If True, skip parameter updates regardless of confidence
+        history: Past proposals with holdout outcomes, shown in the prompt
+        holdout_days: Size of the holdout window Claude's proposal is judged on
         run_ids: Restrict analysis to these run_ids (e.g. just the
             current learning cycle's pair-level runs). Preferred over
             ``run_id`` when a cycle produces multiple runs.
 
     Returns:
-        dict with Claude's analysis and recommendations
+        dict with Claude's proposal. Nothing is applied here; ``_session_id``
+        is the learning_sessions row the evaluation gets recorded on.
     """
     config = load_config()
     learning_cfg = config.get("learning", {})
@@ -207,7 +240,8 @@ def run_claude_review(strategy: str = None, run_id: str = None,
     # Build prompt
     prompt = build_analysis_prompt(
         findings, time_patterns, current_params,
-        strategy or "darvas", sim_results
+        strategy or "darvas", sim_results, history=history,
+        holdout_days=holdout_days,
     )
 
     if dry_run:
@@ -258,48 +292,15 @@ def run_claude_review(strategy: str = None, run_id: str = None,
                 json.dumps(review),
             ))
 
-            # Confidence-gated parameter updates
-            confidence = review.get("confidence", "medium")
-            strat_name = strategy or "darvas"
-
-            if "updated_parameters" in review:
-                if block_param_updates:
-                    print(f"⚠️ Skipping parameter update — quality gates failed")
-                elif confidence == "low":
-                    print(f"⚠️ Skipping parameter update — Claude confidence is LOW")
-                    print(f"  Reason: {review.get('notes', 'insufficient data or unclear patterns')}")
-                else:
-                    version = save_parameters(
-                        conn, strat_name,
-                        review["updated_parameters"],
-                        source="claude_auto_review",
-                        performance={"win_rate": findings.get("overall_win_rate")},
-                        notes=json.dumps(review.get("key_insights", []))
-                    )
-                    print(f"Saved updated parameters as version {version} (confidence: {confidence})")
-
-            # Save filter rules from Claude (reuse connection)
-            if review.get("filter_rules"):
-                init_filter_rules_table(conn)
-                structured_rules = parse_claude_filter_rules(review["filter_rules"])
-                if structured_rules:
-                    save_filter_rules(strat_name, structured_rules,
-                                      source="claude_review", conn=conn)
-                    print(f"Saved {len(structured_rules)} filter rules from Claude review")
-
-            # Also save analyzer's suggested filters (reuse connection)
-            if findings.get("suggested_filters"):
-                init_filter_rules_table(conn)
-                analyzer_rules = parse_analyzer_filters(findings["suggested_filters"])
-                if analyzer_rules:
-                    save_filter_rules(strat_name, analyzer_rules,
-                                      source="analyzer", conn=conn)
-                    print(f"Saved {len(analyzer_rules)} filter rules from analyzer")
-
+            # Nothing is applied here: the learning cycle backtests the
+            # proposal on held-out data and promotes it only if it wins
+            # (src/learning/promotion.py).
+            session_id = cur.lastrowid
             conn.commit()
         finally:
             conn.close()
 
+        review["_session_id"] = session_id
         return review
 
     except ImportError:

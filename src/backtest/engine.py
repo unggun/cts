@@ -44,7 +44,8 @@ class BacktestEngine:
     """Run a trading strategy against historical OHLCV data."""
 
     def __init__(self, strategy: str, params: dict, initial_capital: float = 10_000_000,
-                 costs: dict = None, use_filters: bool = True):
+                 costs: dict = None, use_filters: bool = True,
+                 filters: list = None):
         self.strategy = strategy
         self.params = params
         self.initial_capital = initial_capital
@@ -52,7 +53,11 @@ class BacktestEngine:
         self.run_id = f"{strategy}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
         # Load active filter rules
-        self.filters = load_active_filters(strategy) if use_filters else []
+        # ``filters`` overrides the DB rules (used to evaluate candidate sets).
+        if filters is not None:
+            self.filters = filters
+        else:
+            self.filters = load_active_filters(strategy) if use_filters else []
         self.filtered_count = 0
         self.signal_count = 0
         self.rr_rejected_count = 0
@@ -63,13 +68,16 @@ class BacktestEngine:
         self.trades = []      # Completed trades
         self.equity_curve = []
 
-    def run(self, df: pd.DataFrame, pair: str, timeframe: str) -> dict:
+    def run(self, df: pd.DataFrame, pair: str, timeframe: str,
+            trade_start=None) -> dict:
         """Execute the backtest.
 
         Args:
             df: OHLCV DataFrame
             pair: Trading pair name
             timeframe: Candle timeframe
+            trade_start: If set, only trade bars at or after this timestamp.
+                Earlier bars still warm up the indicators (holdout runs).
 
         Returns:
             dict with performance metrics
@@ -90,6 +98,8 @@ class BacktestEngine:
         strategy_params = self.params.get(self.strategy, self.params)
 
         for i in range(50, len(df)):
+            if trade_start is not None and df.index[i] < trade_start:
+                continue
             price = df.iloc[i]["close"]
 
             # ── Check exit conditions for open position ──

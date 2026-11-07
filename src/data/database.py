@@ -171,6 +171,13 @@ def init_db(db_path: str = None):
     if "protection_child_ids" not in existing_cols:
         cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_child_ids TEXT")
 
+    # ── Migration: holdout evaluation of each Claude proposal ──
+    # Written by src/learning/promotion.py; read back into the next prompt.
+    cur.execute("PRAGMA table_info(learning_sessions)")
+    existing_cols = {row["name"] for row in cur.fetchall()}
+    if "evaluation_json" not in existing_cols:
+        cur.execute("ALTER TABLE learning_sessions ADD COLUMN evaluation_json TEXT")
+
     conn.commit()
     conn.close()
     print(f"Database initialized at {db_path or get_db_path()}", file=sys.stderr)
@@ -282,6 +289,15 @@ def save_parameters(conn: sqlite3.Connection, strategy: str,
           json.dumps(performance) if performance else None, source, notes))
     conn.commit()
     return next_version
+
+
+def latest_parameter_version(conn: sqlite3.Connection, strategy: str) -> int:
+    """Highest saved parameter version for a strategy (0 if none)."""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM strategy_parameters WHERE strategy=?",
+        (strategy,),
+    ).fetchone()
+    return int(row[0])
 
 
 def load_latest_parameters(conn: sqlite3.Connection, strategy: str) -> Optional[dict]:
