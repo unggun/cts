@@ -183,3 +183,56 @@ def test_promotion_telegram_lines(monkeypatch):
     rejected = {"promotion": {"promoted": False, "reason": "only 5 holdout trades"}}
     assert "Not promoted: only 5 holdout trades" in c._promotion_lines("macd", rejected)[0]
     assert c._promotion_lines("macd", {}) == []
+
+
+# ── confidence no longer blocks the holdout test ───────────────────────
+
+def _fake_evaluation(**extra):
+    ev = {"incumbent": _m(30, -0.001), "candidate": _m(40, 0.002), "promoted": False,
+          "would_promote": False, "reason": "tested"}
+    ev.update(extra)
+    return ev
+
+
+@pytest.mark.parametrize("confidence", ["low", "medium", "high"])
+def test_every_confidence_is_tested_on_holdout(monkeypatch, confidence):
+    import src.run_learning_cycle as c
+    calls = []
+    monkeypatch.setattr(c, "run_promotion",
+                        lambda *a, **k: calls.append(a[1]) or _fake_evaluation())
+    review = {"confidence": confidence, "updated_parameters": {"x": 1}}
+    ev = c._verify_and_promote("macd", review, {}, {}, datetime(2026, 8, 9), dry_run=False)
+    assert calls == [review]
+    assert ev["reason"] == "tested"
+
+
+def test_unusable_review_is_still_not_tested(monkeypatch):
+    import src.run_learning_cycle as c
+    monkeypatch.setattr(c, "run_promotion", lambda *a, **k: pytest.fail("should not run"))
+    ev = c._verify_and_promote("macd", {"error": "x"}, {}, {}, datetime(2026, 8, 9),
+                               dry_run=False)
+    assert ev["promoted"] is False
+
+
+# ── Telegram Markdown escaping ─────────────────────────────────────────
+
+def test_md_escapes_legacy_markdown_characters():
+    import src.run_learning_cycle as c
+    assert c._md("effect_size > 0.5, 0.378*2.20 [x] `y`") == \
+        "effect\\_size > 0.5, 0.378\\*2.20 \\[x] \\`y\\`"
+
+
+def test_summary_insight_is_escaped_and_not_wrapped_in_italics(monkeypatch):
+    import sys, types
+    import src.run_learning_cycle as c
+    sent = []
+    fake = types.SimpleNamespace(post=lambda url, json, timeout: sent.append(json) or
+                                 types.SimpleNamespace(ok=True))
+    monkeypatch.setitem(sys.modules, "requests", fake)
+    cfg = {"notifications": {"telegram": {"enabled": True, "bot_token": "t", "chat_id": "1"}}}
+    review = {"key_insights": ["No feature clears effect_size > 0.5 (0.378*2.20)"],
+              "confidence": "low"}
+    c._send_telegram_summary(cfg, "rsi_vwap", {}, {}, review)
+    text = sent[0]["text"]
+    assert "\nNo feature clears effect\\_size > 0.5 (0.378\\*2.20)" in text
+    assert "_No feature" not in text

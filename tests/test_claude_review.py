@@ -56,3 +56,12 @@ def test_prompt_without_history_has_no_history_section():
     from src.learning.claude_review import build_analysis_prompt
     prompt = build_analysis_prompt({"total_trades": 50}, {}, {"a": 1}, "macd")
     assert "Previous Proposals" not in prompt and "How Your Proposal" not in prompt
+
+
+def test_prompt_does_not_tie_filters_or_confidence_to_large_effect_sizes():
+    from src.learning.claude_review import build_analysis_prompt
+    prompt = build_analysis_prompt({"total_trades": 50}, {}, {"a": 1}, "macd", holdout_days=90)
+    assert "effect_size > 0.5" not in prompt
+    assert "not a reason\n  for low confidence" in prompt
+    assert "whatever confidence you report" in prompt
+    assert 'session == european' in prompt

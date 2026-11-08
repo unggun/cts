@@ -35,7 +35,9 @@ holdout start). These runs are not saved to `backtest_trades`.
 - if the incumbent has too few trades: candidate expectancy > 0
 - the bundle actually differs from the incumbent
 
-Claude confidence "low" still skips evaluation. Quality gates and the Monte
+Claude confidence does not skip evaluation (changed 2026-11-08: in the first
+run, "low" blocked 8 of 9 proposals because the prompt tied confidence to
+effect sizes above 0.5, which this data never reaches). Quality gates and the Monte
 Carlo verdict are still computed and reported, but no longer block
 promotion. Live readiness (separate module) stays the gate for live trading.
 

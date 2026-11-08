@@ -172,7 +172,8 @@ The data above excludes the most recent {holdout_days} days. Your updated parame
 filter rules are backtested on those unseen {holdout_days} days, after trading fees and
 slippage, against the current version. {promotion_rule}
 Filter rules that remove most trades will be rejected. Propose only changes you expect to
-generalize.
+generalize. Every proposal is tested this way, whatever confidence you report; confidence
+reflects how likely you think it is to win here and to hold up in live trading.
 """
 
     prompt += """
@@ -201,7 +202,10 @@ IMPORTANT constraints:
 - Do NOT skip more than 1 day of the week. Skipping multiple days kills too many opportunities.
 - Parameter changes should be incremental (10-30% adjustments), not dramatic swings.
 - If stop_loss win rate is 0%, the top priority is widening stops — other optimizations are secondary.
-- Filter rules should target features with effect_size > 0.5 to avoid over-filtering.
+- Effect sizes in this data are usually small (well under 0.5); that alone is not a reason
+  for low confidence. Prefer the analyzer's skip rules above: each removes enough trades,
+  raises expectancy after fees, and holds in both halves of the data.
+- Categorical features take == or !=, e.g. "Skip when session == european".
 
 Be specific and actionable. Include the exact threshold values for filters.
 Respond with valid JSON in the following structure:

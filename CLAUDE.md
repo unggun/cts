@@ -97,9 +97,9 @@ The analyzer learns from the **unfiltered** train trades, so a filter's blind sp
 
 Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per side (`src/backtest/costs.py`). The paper trader enters only on closed candles (`src/data/candles.py`) and uses the same ATR trailing stop as the engine (`src/backtest/exits.py`), persisting ratcheted stops to `trade_journal`. The live trader still acts on the forming candle and does not trail fixed-target (OCO) positions.
 
-### Confidence-Gated Updates
+### Claude Confidence
 
-Claude returns a confidence level (low/medium/high). When confidence is "low", the proposal is not evaluated or promoted. Filter rules change only through promotion (or a manual `--reset-filters`).
+Claude returns a confidence level (low/medium/high). It does not gate promotion: every usable proposal is tested on the holdout, which decides. Confidence is stored in `learning_sessions` and used by the live-readiness check. Filter rules change only through promotion (or a manual `--reset-filters`).
 
 ### Database Schema
 
