@@ -15,6 +15,7 @@ Schedule this via cron or n8n on your VPS:
   0 0 * * 0 cd /opt/crypto-trading-system && python -m src.run_learning_cycle
 """
 import argparse
+import re
 from datetime import datetime
 
 from src.config import load_config
@@ -98,16 +99,14 @@ def _verify_and_promote(strategy: str, review: dict, findings: dict, config: dic
                         trade_start, dry_run: bool) -> dict:
     """Backtest Claude's proposal against the current version on the holdout.
 
+    Every usable proposal is tested, whatever confidence Claude reports: the
+    holdout decides. Confidence is still recorded and gates live readiness.
     In a dry run there is no proposal; the analyzer's filters alone are
     evaluated so the holdout comparison can still be inspected.
     """
     if not dry_run:
         if "error" in review or "raw_response" in review:
             return {"promoted": False, "reason": "no usable proposal from Claude"}
-        if review.get("confidence") == "low":
-            reason = "Claude confidence is low"
-            record_evaluation(review.get("_session_id"), {"promoted": False, "reason": reason})
-            return {"promoted": False, "reason": reason}
 
     print(f"\n  Validating proposal on holdout (from {trade_start:%Y-%m-%d})...")
     evaluation = run_promotion(strategy, {} if dry_run else review, findings,
@@ -436,12 +435,21 @@ def _send_zero_trade_telegram(config: dict, strategy: str, results: dict):
         print(f"  Zero-trade Telegram notification failed: {e}")
 
 
+def _md(text) -> str:
+    """Escape Telegram legacy-Markdown characters.
+
+    Escapes only work outside entities, so escaped text must not be wrapped
+    in *bold* or _italic_.
+    """
+    return re.sub(r"([_*`\[])", r"\\\1", str(text))
+
+
 def _promotion_lines(strategy: str, review: dict) -> list:
     """Telegram lines describing the holdout verdict on Claude's proposal."""
     ev = review.get("promotion") if isinstance(review, dict) else None
     if not ev:
         return []
-    reason = ev.get("reason", "").replace("_", "\\_")
+    reason = _md(ev.get("reason", ""))
     if ev.get("promoted"):
         lines = [f"\n✅ *Promoted v{ev.get('version')}* (holdout): {reason}"]
         param_diff = format_param_diff(strategy)
@@ -450,7 +458,7 @@ def _promotion_lines(strategy: str, review: dict) -> list:
         if ev.get("filters_removed"):
             lines.append("📋 Filters now: none (all removed)")
         elif ev.get("candidate_filters"):
-            lines.append(f"📋 Filters now: {'; '.join(ev['candidate_filters'])}".replace("_", "\\_"))
+            lines.append(f"📋 Filters now: {_md('; '.join(ev['candidate_filters']))}")
         return lines
     return [f"\n🛑 Not promoted: {reason}"]
 
@@ -488,8 +496,7 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
         if isinstance(review, dict) and "key_insights" in review:
             lines.append("\n*Top Insight:*")
             if review["key_insights"]:
-                insight = review["key_insights"][0].replace("_", "\\_")
-                lines.append(f"_{insight}_")
+                lines.append(_md(review["key_insights"][0]))
 
         # Confidence indicator
         if isinstance(review, dict) and "confidence" in review:
