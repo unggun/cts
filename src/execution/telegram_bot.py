@@ -7,6 +7,8 @@ Runs as a long-polling bot that listens for commands:
   /equity                — show equity summary per strategy
   /readiness             — per-strategy paper→live readiness
   /readiness <strategy>  — full gate detail for one strategy
+  /journal               — current version per strategy: holdout vs paper
+  /journal <strategy>    — recent Claude proposals and their results
   /help                  — show available commands
 """
 import time
@@ -14,6 +16,8 @@ import signal
 import sys
 import json
 from datetime import datetime
+
+TELEGRAM_TEXT_LIMIT = 3900  # Telegram caps messages at 4096 characters
 
 import requests as req
 
@@ -117,6 +121,7 @@ class TelegramBot:
             "/equity": self._cmd_equity,
             "/readiness": self._cmd_readiness,
             "/ready": self._cmd_readiness,
+            "/journal": self._cmd_journal,
             "/help": self._cmd_help,
             "/start": self._cmd_help,
         }
@@ -167,6 +172,8 @@ class TelegramBot:
             "`/equity` — equity summary per strategy\n"
             "`/readiness` — per-strategy paper→live readiness\n"
             "`/readiness <strategy>` — full gate detail for one strategy\n"
+            "`/journal` — current version per strategy: holdout vs paper\n"
+            "`/journal <strategy>` — recent Claude proposals and their results\n"
             "`/help` — this message"
         )
 
@@ -299,6 +306,24 @@ class TelegramBot:
             lines.append("\n_No closed trades in last 7 days_")
 
         return "\n".join(lines)
+
+    def _cmd_journal(self, args: list) -> str:
+        """Research journal: holdout predictions vs paper results."""
+        from src.execution.live_readiness import KNOWN_STRATEGIES
+        from src.learning import journal
+
+        init_db()
+        if args:
+            name = args[0].lower()
+            if name not in KNOWN_STRATEGIES:
+                return f"Unknown strategy: {name}\nKnown: {', '.join(KNOWN_STRATEGIES)}"
+            text = journal.format_strategy(journal.build_journal(name, limit=5))
+        else:
+            text = journal.format_overview(journal.overview())
+        text = text.replace("`", "'")  # a backtick would end the code block
+        if len(text) > TELEGRAM_TEXT_LIMIT:
+            text = text[:TELEGRAM_TEXT_LIMIT] + "\n…"
+        return f"```\n{text}\n```"
 
     def _cmd_readiness(self, args: list) -> str:
         """Show live-trading readiness per strategy."""

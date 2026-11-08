@@ -320,13 +320,13 @@ class PaperTrader:
             INSERT INTO trade_journal
             (mode, pair, strategy, direction, entry_time, entry_price,
              stop_loss, take_profit, position_size, features_json,
-             protection_mode)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             protection_mode, param_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             "paper", pair, self.strategy, "long",
             self.positions[pair]["entry_time"], levels["entry"],
             levels["stop_loss"], levels.get("target"), position_size,
-            json.dumps(features), "simulated",
+            json.dumps(features), "simulated", self.param_row_id,
         ))
         self.positions[pair]["id"] = cur.lastrowid
         conn.commit()

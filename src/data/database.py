@@ -171,6 +171,16 @@ def init_db(db_path: str = None):
     if "protection_child_ids" not in existing_cols:
         cur.execute("ALTER TABLE trade_journal ADD COLUMN protection_child_ids TEXT")
 
+    # ── Migration: which strategy_parameters row a paper trade was opened under ──
+    # Written by src/execution/paper_trader.py; read by src/learning/journal.py.
+    cur.execute("PRAGMA table_info(trade_journal)")
+    if "param_id" not in {row["name"] for row in cur.fetchall()}:
+        try:
+            cur.execute("ALTER TABLE trade_journal ADD COLUMN param_id INTEGER")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e):
+                raise
+
     # ── Migration: holdout evaluation of each Claude proposal ──
     # Written by src/learning/promotion.py; read back into the next prompt.
     cur.execute("PRAGMA table_info(learning_sessions)")

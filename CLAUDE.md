@@ -50,6 +50,11 @@ python3 -m src.execution.live_readiness
 python3 -m src.execution.live_readiness --strategy dbw
 python3 -m src.execution.live_readiness --json
 
+# Research journal: Claude proposals, holdout result, paper result per version
+python3 -m src.learning.journal
+python3 -m src.learning.journal --strategy cvd
+python3 -m src.learning.journal --strategy cvd --json
+
 # Telegram bot (listens for /positions, /equity, /help commands)
 python3 -m src.execution.telegram_bot
 
@@ -138,6 +143,10 @@ protection if it's missing.
 
 `src/execution/positions.py` provides a CLI to query open positions from `trade_journal`. Open positions are identified by `exit_time IS NULL`.
 
+### Research Journal
+
+`src/learning/journal.py` (read-only) links each Claude review (`learning_sessions`) to its holdout result and, for promoted versions, to the paper trades made under that version. Paper trades carry `trade_journal.param_id` (the `strategy_parameters.id` the paper trader was using); older trades are assigned by time, converting the UTC `created_at` to the trader's local `entry_time` clock. Each version gets a verdict: `NO_PREDICTION` (no holdout metrics), `TOO_FEW` (< 20 closed paper trades), `BEHIND` (paper expectancy + 2 standard errors < holdout expectancy) or `ON_TRACK`. `BEHIND` versions are listed in the weekly Telegram summary; nothing is rolled back automatically. Claude's reply includes a `hypothesis` (`idea`, `expected_expectancy_pct`, `expected_trades`), shown next to the holdout and paper results. Design: `docs/superpowers/specs/2026-11-08-research-journal-design.md`.
+
 ### Live-Readiness Check
 
 `src/execution/live_readiness.py` evaluates per-strategy readiness to flip from paper to live trading. Read-only, checks four gates: Monte Carlo verdict/ruin probability, Claude confidence, and current-param paper-trade stats (split around the latest `strategy_parameters.created_at` cutover; trades older than 30 days excluded). Status tiers: `INSUFFICIENT_DATA` (MC sample < 50) → `BLOCKED` → `WATCH` → `READY`. Flipping to live remains manual.
@@ -146,7 +155,7 @@ The weekly learning-cycle Telegram summary (`_send_multi_strategy_telegram` in `
 
 ### Telegram Bot
 
-`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/readiness`, `/readiness <strategy>`, `/help`. Run as a systemd service on the VPS.
+`src/execution/telegram_bot.py` is a long-polling Telegram bot that listens for commands from the configured `chat_id`. Supported commands: `/positions`, `/positions paper`, `/positions live`, `/positions <strategy>`, `/equity`, `/readiness`, `/readiness <strategy>`, `/journal`, `/journal <strategy>`, `/help`. Run as a systemd service on the VPS.
 
 ### Feature Extraction
 
