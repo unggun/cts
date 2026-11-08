@@ -268,9 +268,10 @@ def test_history_skips_bad_rows_and_still_fills_n(db):
     conn = get_connection(db)
     good = {"promoted": False, "reason": "ok", "incumbent": {"trades": 40, "expectancy": 0.0},
             "candidate": {"trades": 40, "expectancy": 0.001}}
-    rows = [({"filter_rules": [{"rule": "Skip when a > 1"}]}, good),
+    rows = [({"filter_rules": [{"rule": "Skip when a > 1"}]},
+             dict(good, candidate_filters=["a > 1", None])),
             ({"filter_rules": [{"rule": "Skip when b > 1"}]}, dict(good, incumbent=None)),
-            ({"filter_rules": [{"rule": None}]}, {"promoted": False, "reason": "skipped"}),
+            ({"filter_rules": [{"rule": None}, None]}, {"promoted": False, "reason": "skipped"}),
             ({}, dict(good, candidate=None)),
             ({}, [1, 2])]
     for rec, ev in rows:
@@ -283,4 +284,5 @@ def test_history_skips_bad_rows_and_still_fills_n(db):
     assert [h["reason"] for h in history] == ["skipped", "ok", "ok"]
     assert history[0]["filter_rules"] == []
     assert history[1]["incumbent"] == {}
+    assert history[2]["filter_rules"] == ["a > 1"]
     format_history(history)

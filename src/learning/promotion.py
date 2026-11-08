@@ -213,12 +213,13 @@ def _as_list(value) -> list:
 def load_recent_evaluations(strategy: str, n: int = 3) -> list:
     """Last ``n`` evaluated proposals, newest first, for Claude's prompt."""
     conn = get_connection()
+    # Iterate the cursor (no fetchall): read only as far back as needed to
+    # find n usable rows.
     rows = conn.execute("""
         SELECT created_at, recommendations_json, evaluation_json FROM learning_sessions
         WHERE strategy = ? AND evaluation_json IS NOT NULL
         ORDER BY id DESC
-    """, (strategy,)).fetchall()
-    conn.close()
+    """, (strategy,))
     history = []
     for row in rows:
         if len(history) >= n:
@@ -237,7 +238,7 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
         # Claude's fields can be null or malformed; a bad row must not break
         # every later cycle's prompt.
         proposed = [str(f.get("rule") or "") if isinstance(f, dict) else str(f)
-                    for f in _as_list(rec.get("filter_rules"))]
+                    for f in _as_list(rec.get("filter_rules")) if f is not None]
         proposed = [f for f in proposed if f]
         history.append({
             "created_at": row["created_at"],
@@ -245,7 +246,8 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
                                   if isinstance(c, dict)],
             # The filter set that was actually backtested (Claude's rules merged
             # with the analyzer's and capped), not just what Claude wrote.
-            "filter_rules": [str(f) for f in _as_list(ev.get("candidate_filters"))]
+            "filter_rules": [str(f) for f in _as_list(ev.get("candidate_filters"))
+                             if f is not None]
             if evaluated else proposed,
             "evaluated": evaluated,
             # Whether Claude's proposal won; a no-filters promotion isn't its win.
@@ -255,6 +257,7 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
             "incumbent": incumbent if isinstance(incumbent, dict) else {},
             "candidate": ev.get("candidate", {}),
         })
+    conn.close()
     return history
 
 
