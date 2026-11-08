@@ -244,3 +244,45 @@ def test_runner_handles_pair_without_candles(monkeypatch):
     monkeypatch.setattr(runner, "load_ohlcv", lambda conn, pair, tf: pd.DataFrame())
     assert runner.run_backtest("darvas", "NEW/IDR", "1h", config={},
                                end=pd.Timestamp("2026-08-01")) == {}
+
+
+def test_history_survives_null_or_malformed_claude_fields(db):
+    import json
+    conn = get_connection(db)
+    for rec in [{"filter_rules": None, "parameter_changes": None, "confidence": "low"},
+                {"filter_rules": ["Skip when rsi > 70", 3], "parameter_changes": ["x", None]}]:
+        cur = conn.execute("INSERT INTO learning_sessions (session_type, strategy, "
+                           "recommendations_json) VALUES ('claude_review', 's', ?)",
+                           (json.dumps(rec),))
+        conn.commit()
+        pr.record_evaluation(cur.lastrowid, {"promoted": False,
+                                             "reason": "Claude returned no parameters or filter rules"})
+    history = pr.load_recent_evaluations("s")
+    assert [h["filter_rules"] for h in history] == [["Skip when rsi > 70", "3"], []]
+    assert all(h["parameter_changes"] == [] for h in history)
+    assert "NOT EVALUATED" in format_history(history)
+
+
+def test_history_skips_bad_rows_and_still_fills_n(db):
+    import json
+    conn = get_connection(db)
+    good = {"promoted": False, "reason": "ok", "incumbent": {"trades": 40, "expectancy": 0.0},
+            "candidate": {"trades": 40, "expectancy": 0.001}}
+    rows = [({"filter_rules": [{"rule": "Skip when a > 1"}]},
+             dict(good, candidate_filters=["a > 1", None])),
+            ({"filter_rules": [{"rule": "Skip when b > 1"}]}, dict(good, incumbent=None)),
+            ({"filter_rules": [{"rule": None}, None]}, {"promoted": False, "reason": "skipped"}),
+            ({}, dict(good, candidate=None)),
+            ({}, [1, 2])]
+    for rec, ev in rows:
+        cur = conn.execute("INSERT INTO learning_sessions (session_type, strategy, "
+                           "recommendations_json, evaluation_json) VALUES ('claude_review', "
+                           "'s', ?, ?)", (json.dumps(rec), json.dumps(ev)))
+        conn.commit()
+    history = pr.load_recent_evaluations("s", n=3)
+    # The two newest rows are malformed; older usable rows fill the history.
+    assert [h["reason"] for h in history] == ["skipped", "ok", "ok"]
+    assert history[0]["filter_rules"] == []
+    assert history[1]["incumbent"] == {}
+    assert history[2]["filter_rules"] == ["a > 1"]
+    format_history(history)

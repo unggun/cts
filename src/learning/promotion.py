@@ -206,38 +206,58 @@ def record_evaluation(session_id: int, evaluation: dict):
     conn.close()
 
 
+def _as_list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
 def load_recent_evaluations(strategy: str, n: int = 3) -> list:
     """Last ``n`` evaluated proposals, newest first, for Claude's prompt."""
     conn = get_connection()
+    # Iterate the cursor (no fetchall): read only as far back as needed to
+    # find n usable rows.
     rows = conn.execute("""
         SELECT created_at, recommendations_json, evaluation_json FROM learning_sessions
         WHERE strategy = ? AND evaluation_json IS NOT NULL
-        ORDER BY id DESC LIMIT ?
-    """, (strategy, n)).fetchall()
-    conn.close()
+        ORDER BY id DESC
+    """, (strategy,))
     history = []
     for row in rows:
+        if len(history) >= n:
+            break
         try:
             rec = json.loads(row["recommendations_json"] or "{}")
             ev = json.loads(row["evaluation_json"])
         except (TypeError, json.JSONDecodeError):
             continue
+        if not isinstance(rec, dict) or not isinstance(ev, dict):
+            continue
         evaluated = "candidate" in ev
+        if evaluated and not isinstance(ev["candidate"], dict):
+            continue
+        incumbent = ev.get("incumbent")
+        # Claude's fields can be null or malformed; a bad row must not break
+        # every later cycle's prompt.
+        proposed = [str(f.get("rule") or "") if isinstance(f, dict) else str(f)
+                    for f in _as_list(rec.get("filter_rules")) if f is not None]
+        proposed = [f for f in proposed if f]
         history.append({
             "created_at": row["created_at"],
-            "parameter_changes": rec.get("parameter_changes", []),
+            "parameter_changes": [c for c in _as_list(rec.get("parameter_changes"))
+                                  if isinstance(c, dict)],
             # The filter set that was actually backtested (Claude's rules merged
             # with the analyzer's and capped), not just what Claude wrote.
-            "filter_rules": ev.get("candidate_filters", []) if evaluated
-            else [f.get("rule", "") for f in rec.get("filter_rules", [])],
+            "filter_rules": [str(f) for f in _as_list(ev.get("candidate_filters"))
+                             if f is not None]
+            if evaluated else proposed,
             "evaluated": evaluated,
             # Whether Claude's proposal won; a no-filters promotion isn't its win.
             "promoted": bool(ev.get("promoted")) and not ev.get("filters_removed"),
             "filters_removed": bool(ev.get("promoted") and ev.get("filters_removed")),
             "reason": ev.get("reason", ""),
-            "incumbent": ev.get("incumbent", {}),
+            "incumbent": incumbent if isinstance(incumbent, dict) else {},
             "candidate": ev.get("candidate", {}),
         })
+    conn.close()
     return history
 
 
