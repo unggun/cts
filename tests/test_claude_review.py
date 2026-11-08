@@ -65,3 +65,10 @@ def test_prompt_does_not_tie_filters_or_confidence_to_large_effect_sizes():
     assert "not a reason\n  for low confidence" in prompt
     assert "whatever confidence you report" in prompt
     assert 'session == european' in prompt
+
+
+def test_prompt_categorical_guidance_and_conditional_analyzer_rules():
+    from src.learning.claude_review import build_analysis_prompt
+    prompt = build_analysis_prompt({"total_trades": 50}, {}, {"a": 1}, "macd")
+    assert "When analyzer skip rules are listed above" in prompt
+    assert "categorical features (session, rsi_zone) take == or != with their text value" in prompt

@@ -187,7 +187,8 @@ Based on this analysis, provide:
 
 3. **Filter Rules**: Suggest concrete, machine-parseable filter rules. Each rule must reference an exact feature name from the feature analysis above and use a comparison operator.
    Format: "Skip when feature_name > threshold" or "Prefer when feature_name < threshold"
-   Use actual feature names (e.g., rsi_bull_divergence, upper_wick_ratio, mixed_ema_signals) and numeric thresholds.
+   Use actual feature names (e.g., rsi_bull_divergence, upper_wick_ratio, mixed_ema_signals). Numeric features take
+   numeric thresholds; categorical features (session, rsi_zone) take == or != with their text value.
 
 4. **Risk Assessment**: Based on the Monte Carlo results (if available) and win/loss patterns, should the position sizing be adjusted?
 
@@ -203,8 +204,8 @@ IMPORTANT constraints:
 - Parameter changes should be incremental (10-30% adjustments), not dramatic swings.
 - If stop_loss win rate is 0%, the top priority is widening stops — other optimizations are secondary.
 - Effect sizes in this data are usually small (well under 0.5); that alone is not a reason
-  for low confidence. Prefer the analyzer's skip rules above: each removes enough trades,
-  raises expectancy after fees, and holds in both halves of the data.
+  for low confidence. When analyzer skip rules are listed above, prefer them: each removes
+  enough trades, raises expectancy after fees, and holds in both halves of the data.
 - Categorical features take == or !=, e.g. "Skip when session == european".
 
 Be specific and actionable. Include the exact threshold values for filters.

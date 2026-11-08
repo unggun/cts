@@ -107,6 +107,11 @@ def _verify_and_promote(strategy: str, review: dict, findings: dict, config: dic
     if not dry_run:
         if "error" in review or "raw_response" in review:
             return {"promoted": False, "reason": "no usable proposal from Claude"}
+        if not any(isinstance(review.get(k), want) for k, want in
+                   (("updated_parameters", dict), ("filter_rules", list))):
+            reason = "Claude returned no parameters or filter rules"
+            record_evaluation(review.get("_session_id"), {"promoted": False, "reason": reason})
+            return {"promoted": False, "reason": reason}
 
     print(f"\n  Validating proposal on holdout (from {trade_start:%Y-%m-%d})...")
     evaluation = run_promotion(strategy, {} if dry_run else review, findings,
@@ -444,6 +449,11 @@ def _md(text) -> str:
     return re.sub(r"([_*`\[])", r"\\\1", str(text))
 
 
+def _unmd(text: str) -> str:
+    """Undo ``_md`` for the plain-text fallback, so no backslashes show."""
+    return re.sub(r"\\([_*`\[])", r"\1", text)
+
+
 def _promotion_lines(strategy: str, review: dict) -> list:
     """Telegram lines describing the holdout verdict on Claude's proposal."""
     ev = review.get("promotion") if isinstance(review, dict) else None
@@ -520,7 +530,7 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
             # Retry without Markdown if parsing failed
             resp2 = requests.post(
                 f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={"chat_id": chat_id, "text": message},
+                json={"chat_id": chat_id, "text": _unmd(message)},
                 timeout=10,
             )
             if resp2.ok:

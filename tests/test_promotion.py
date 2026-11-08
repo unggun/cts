@@ -236,3 +236,37 @@ def test_summary_insight_is_escaped_and_not_wrapped_in_italics(monkeypatch):
     text = sent[0]["text"]
     assert "\nNo feature clears effect\\_size > 0.5 (0.378\\*2.20)" in text
     assert "_No feature" not in text
+
+
+@pytest.mark.parametrize("review", [{"confidence": "low"},
+                                    {"confidence": "high", "updated_parameters": None}])
+def test_review_without_a_proposal_is_not_tested(monkeypatch, review):
+    import src.run_learning_cycle as c
+    monkeypatch.setattr(c, "run_promotion", lambda *a, **k: pytest.fail("should not run"))
+    recorded = []
+    monkeypatch.setattr(c, "record_evaluation", lambda sid, ev: recorded.append(ev))
+    ev = c._verify_and_promote("macd", review, {}, {}, datetime(2026, 8, 9), dry_run=False)
+    assert ev["promoted"] is False and "no parameters or filter rules" in ev["reason"]
+    assert recorded == [ev]
+
+
+def test_empty_filter_list_still_counts_as_a_proposal(monkeypatch):
+    import src.run_learning_cycle as c
+    monkeypatch.setattr(c, "run_promotion", lambda *a, **k: _fake_evaluation())
+    ev = c._verify_and_promote("macd", {"filter_rules": []}, {}, {}, datetime(2026, 8, 9),
+                               dry_run=False)
+    assert ev["reason"] == "tested"
+
+
+def test_plain_text_fallback_has_no_escape_backslashes(monkeypatch):
+    import sys, types
+    import src.run_learning_cycle as c
+    sent = []
+    def post(url, json, timeout):
+        sent.append(json)
+        return types.SimpleNamespace(ok="parse_mode" not in json, status_code=400, text="bad")
+    monkeypatch.setitem(sys.modules, "requests", types.SimpleNamespace(post=post))
+    cfg = {"notifications": {"telegram": {"enabled": True, "bot_token": "t", "chat_id": "1"}}}
+    c._send_telegram_summary(cfg, "macd", {}, {}, {"key_insights": ["effect_size 0.3*2"]})
+    assert len(sent) == 2 and "effect_size 0.3*2" in sent[1]["text"]
+    assert "\\" not in sent[1]["text"]
