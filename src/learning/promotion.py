@@ -216,11 +216,13 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
     rows = conn.execute("""
         SELECT created_at, recommendations_json, evaluation_json FROM learning_sessions
         WHERE strategy = ? AND evaluation_json IS NOT NULL
-        ORDER BY id DESC LIMIT ?
-    """, (strategy, n)).fetchall()
+        ORDER BY id DESC
+    """, (strategy,)).fetchall()
     conn.close()
     history = []
     for row in rows:
+        if len(history) >= n:
+            break
         try:
             rec = json.loads(row["recommendations_json"] or "{}")
             ev = json.loads(row["evaluation_json"])
@@ -229,10 +231,14 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
         if not isinstance(rec, dict) or not isinstance(ev, dict):
             continue
         evaluated = "candidate" in ev
+        if evaluated and not isinstance(ev["candidate"], dict):
+            continue
+        incumbent = ev.get("incumbent")
         # Claude's fields can be null or malformed; a bad row must not break
         # every later cycle's prompt.
-        proposed = [f.get("rule", "") if isinstance(f, dict) else str(f)
+        proposed = [str(f.get("rule") or "") if isinstance(f, dict) else str(f)
                     for f in _as_list(rec.get("filter_rules"))]
+        proposed = [f for f in proposed if f]
         history.append({
             "created_at": row["created_at"],
             "parameter_changes": [c for c in _as_list(rec.get("parameter_changes"))
@@ -246,7 +252,7 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
             "promoted": bool(ev.get("promoted")) and not ev.get("filters_removed"),
             "filters_removed": bool(ev.get("promoted") and ev.get("filters_removed")),
             "reason": ev.get("reason", ""),
-            "incumbent": ev.get("incumbent", {}),
+            "incumbent": incumbent if isinstance(incumbent, dict) else {},
             "candidate": ev.get("candidate", {}),
         })
     return history
