@@ -267,6 +267,37 @@ def load_recent_evaluations(strategy: str, n: int = 3) -> list:
 
 # ── Orchestration ───────────────────────────────────────────────────────
 
+def load_closed_candles(config: dict, end=None) -> tuple[dict, pd.DataFrame]:
+    """Closed candles of every trading pair, and of the regime pair.
+
+    Returns ``({pair: df}, btc_df)``; ``btc_df`` is empty when the regime pair has
+    no data (as in paper trading, nothing stands in for it). With ``end``, only
+    candles strictly before it are kept.
+    """
+    timeframe = config["trading"]["timeframes"][0]
+    conn = get_connection()
+    try:
+        def closed(pair):
+            df = load_ohlcv(conn, pair, timeframe)
+            # The newest stored candle may still be forming; judge on closed bars only.
+            last = last_closed_index(df, timeframe) if not df.empty else None
+            df = df.iloc[:last + 1] if last is not None else None
+            if df is not None and end is not None:
+                df = df[df.index < end]
+            return df if df is not None and not df.empty else None
+
+        dfs = {}
+        for pair in config["trading"]["pairs"]:
+            df = closed(pair)
+            if df is not None:
+                dfs[pair] = df
+        btc_pair = regime_pair(config)
+        btc_df = dfs[btc_pair] if btc_pair in dfs else closed(btc_pair)
+    finally:
+        conn.close()
+    return dfs, (btc_df if btc_df is not None else pd.DataFrame())
+
+
 def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
                   trade_start, dry_run: bool = False) -> dict:
     """Evaluate Claude's proposal against the current version and promote it if better."""
@@ -282,22 +313,9 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     inc_params = load_latest_parameters(conn, strategy)
     if inc_params is None:
         inc_params = copy.deepcopy(config.get("strategy", {}).get(strategy, {}))
-    def closed(pair):
-        df = load_ohlcv(conn, pair, timeframe)
-        # The newest stored candle may still be forming; judge on closed bars only.
-        last = last_closed_index(df, timeframe) if not df.empty else None
-        return df.iloc[:last + 1] if last is not None else None
-
-    dfs = {}
-    for pair in config["trading"]["pairs"]:
-        df = closed(pair)
-        if df is not None:
-            dfs[pair] = df
-    btc_pair = regime_pair(config)
-    btc_df = dfs[btc_pair] if btc_pair in dfs else closed(btc_pair)
-    if btc_df is None:
-        btc_df = pd.DataFrame()      # missing, as in paper trading: no BTC/IDR stand-in
     conn.close()
+    dfs, btc_df = load_closed_candles(config)
+    btc_pair = regime_pair(config)
 
     inc_filters = load_active_filters(strategy)
     proposed = review.get("updated_parameters")

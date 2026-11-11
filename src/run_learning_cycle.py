@@ -285,6 +285,7 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
         run_ids=analysis_run_ids,
         history=load_recent_evaluations(strategy, n=3),
         holdout_days=holdout_days,
+        train_end=trade_start,
     )
 
     # ── Step 5b: Verify the proposal on held-out data, promote if better ──
@@ -513,6 +514,14 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
             conf = review["confidence"]
             conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(conf, "⚪")
             lines.append(f"\nConfidence: {conf_emoji} {conf}")
+        runs = ((review.get("backtests") or {}).get("calls") or []) \
+            if isinstance(review, dict) and isinstance(review.get("backtests"), dict) else []
+        if runs:
+            final = review["backtests"].get("final_bundle") or {}
+            tested = {True: "; final bundle tested",
+                      False: "; final bundle not tested"}.get(final.get("tested"), "")
+            lines.append(f"🔬 {len(runs)} train backtest{'s' if len(runs) != 1 else ''} "
+                         f"before proposing{tested}")
 
         lines.extend(_promotion_lines(strategy, review))
 

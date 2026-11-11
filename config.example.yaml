@@ -181,6 +181,11 @@ learning:
   max_drawdown: 0.25
   min_total_trades: 50
   min_expectancy: 0.0  # WR * avg_win + (1-WR) * avg_loss must be positive
+  # run_backtest tool: Claude can backtest bundles on the train window (never the
+  # holdout) before proposing. Each call takes ~15-30 s.
+  backtest_tool:
+    enabled: true
+    max_calls: 6
 
 notifications:
   telegram:
