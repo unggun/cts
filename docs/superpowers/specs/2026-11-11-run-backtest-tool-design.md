@@ -62,6 +62,17 @@ run_backtest(parameter_changes: object, filter_rules: array) -> result
     per feature). So Claude tests exactly what its final proposal would apply.
   - The result lists the rules that were applied and those dropped by the cap.
   - `[]` means only the analyzer's rules.
+  - The set **replaces** the current filters, as in the final answer. The tool
+    description, the prompt and each result (`current_version.filters`) say so.
+    In the first real run (2026-11-11), Claude believed it was adding a rule to
+    cvd's filters. Each test silently dropped two of them. Its final answer then
+    listed the current filters first, so the cap dropped the new rule, and its
+    idea never reached the holdout.
+- Repeating a bundle already tested returns the earlier result and doesn't use a
+  call.
+- After the answer, the review records whether the final bundle (built the way
+  promotion builds it) matches one Claude tested:
+  `backtests.final_bundle.tested`. The journal and the Telegram summary show it.
 - **The window** is the train window only. The cut-off is the holdout start the
   learning cycle already computed (`train_end=trade_start`). It is not recomputed:
   recomputing "now − 90 days" minutes later would move the boundary past a

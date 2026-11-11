@@ -129,9 +129,9 @@ def test_result_compares_with_current_version_and_splits_halves(db, seen):
 
 def test_budget_is_enforced_and_recorded(db, seen):
     tool = _tool(db, max_calls=2)
-    for _ in range(2):
-        assert not tool.run({"parameter_changes": {}, "filter_rules": []})[1]
-    text, err = tool.run({"parameter_changes": {}, "filter_rules": []})
+    for tp in (0.6, 0.7):
+        assert not tool.run({"parameter_changes": {"tp": tp}, "filter_rules": []})[1]
+    text, err = tool.run({"parameter_changes": {"tp": 0.8}, "filter_rules": []})
     assert err and "budget used up" in text.lower()
     summary = tool.summary()
     assert len(summary["calls"]) == 2 and summary["refused"] == 1
@@ -231,3 +231,32 @@ def test_journal_lists_backtests_defensively():
     assert lines[0] == "tp=0.7; skip x > 5 → 40 trades, +0.12%/trade (halves +0.20% / —)"
     assert lines[1].startswith("current params, no filters → — trades")
     assert journal.backtests({}) == [] and journal.backtests({"backtests": "x"}) == []
+    rec["backtests"]["final_bundle"] = {"tested": False}
+    assert journal.backtests(rec)[-1] == "final proposal: NOT backtested"
+
+
+def test_repeating_a_bundle_does_not_use_a_call(db, seen):
+    tool = _tool(db, max_calls=2)
+    first = json.loads(tool.run({"parameter_changes": {"tp": 0.6}, "filter_rules": []})[0])
+    n = len(seen["last_bar"])
+    again = json.loads(tool.run({"parameter_changes": {"tp": 0.6}, "filter_rules": []})[0])
+    assert len(seen["last_bar"]) == n and "did not use a call" in again["note"]
+    assert again["trades"] == first["trades"] and again["calls_left"] == 1
+    assert tool.summary()["repeats"] == 1 and len(tool.calls) == 1
+
+
+def test_records_whether_the_final_bundle_was_tested(db, seen):
+    fr.save_filter_rules("fake", [{"feature": "y", "operator": ">", "threshold": 5.0,
+                                   "rule_type": "skip", "source": "claude_review"}])
+    tool = _tool(db)
+    out = json.loads(tool.run({"parameter_changes": {"tp": 0.7},
+                               "filter_rules": [{"rule": "Skip when z > 5"}]})[0])
+    assert out["current_version"]["filters"] == ["y > 5"]          # shown, then replaced
+    assert out["applied_filters"] == ["z > 5"]
+    full = {"min_risk_reward": 0.0, "tp": 0.7, "period": 10}
+    tested = {"updated_parameters": full, "filter_rules": [{"rule": "Skip when z > 5"}]}
+    assert tool.summary(tested)["final_bundle"] == {"tested": True, "applied_filters": ["z > 5"]}
+    # Keeping the current filter and adding the tested one is a different bundle.
+    other = dict(tested, filter_rules=[{"rule": "Skip when y > 5"}, {"rule": "Skip when z > 5"}])
+    assert tool.final_bundle(other)["tested"] is False
+    assert tool.final_bundle(dict(tested, updated_parameters=dict(full, tp=0.8)))["tested"] is False

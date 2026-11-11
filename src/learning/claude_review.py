@@ -237,8 +237,13 @@ chronological half of the window.
   fine-tune numbers. Train results here often differ a lot from the holdout, and small
   gains are usually noise: a change worth proposing helps in both halves and keeps enough
   trades.
-- Filters are combined exactly as for your final proposal (the analyzer's skip rules are
-  added, then the cap applies); each result lists what was applied.
+- `filter_rules` is the complete filter set, in the tool and in your final answer: it
+  replaces the current filters rather than adding to them, so list any current filter
+  you want to keep. Rules are applied as for your final proposal: the analyzer's skip
+  rules first, then yours in the order you list them, one per feature, up to the cap.
+  Each result lists what was applied and what was dropped.
+- Propose a bundle you tested: the same parameters and the same filter rules, in the
+  same order. Whether you did is recorded next to the holdout result.
 - Backtests are optional. When you are done, reply with the final JSON described below;
   the proposal is still judged only on the holdout.
 """
@@ -386,9 +391,12 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         if message.stop_reason == "max_tokens":
             print("⚠️ Claude response hit max_tokens — output may be truncated")
         if tool:
-            review["backtests"] = tool.summary()
+            review["backtests"] = tool.summary(review)
+            tested = review["backtests"]["final_bundle"]["tested"]
             print(f"  Claude ran {len(tool.calls)} train-window backtest(s)"
-                  + (f", {tool.refused} refused over budget" if tool.refused else ""))
+                  + (f", {tool.refused} refused over budget" if tool.refused else "")
+                  + ("; the final bundle was one of them" if tested
+                     else "; the final bundle was NOT backtested"))
         review["api_usage"] = usage
 
         # Save the learning session and results in a single connection

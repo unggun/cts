@@ -183,6 +183,10 @@ def backtests(rec: dict) -> list:
                      f"{_pct_num(res.get('expectancy_pct'))}/trade "
                      f"(halves {_pct_num(halves[0].get('expectancy_pct'))} / "
                      f"{_pct_num(halves[1].get('expectancy_pct'))})")
+    final = bt.get("final_bundle") if isinstance(bt, dict) else None
+    if lines and isinstance(final, dict) and "tested" in final:
+        lines.append("final proposal: " + ("one of these" if final["tested"] is True
+                                           else "NOT backtested"))
     return lines
 
 

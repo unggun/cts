@@ -33,9 +33,12 @@ TOOL_SCHEMA = {
         "data as the analysis in the prompt, never the holdout. Fees and slippage are "
         "included. Returns trades, expectancy per trade, win rate, max drawdown, expectancy "
         "in each chronological half of the window, and the same numbers for the current "
-        "version. Filters are combined exactly like your final proposal: the analyzer's "
-        "skip rules are added to yours, then only the strongest skip rules (one per "
-        "feature) are applied; the result lists what was applied and what was dropped. "
+        "version (with its filters). filter_rules is the complete rule set, exactly like "
+        "in your final answer: it REPLACES the current filters, it is not added to them, so "
+        "list any current filter you want to keep. Filters are combined like your final "
+        "proposal: the analyzer's skip rules come first, then yours in the order you list "
+        "them, one per feature, up to a cap; the result lists what was applied and what was "
+        "dropped. Repeating an earlier bundle returns its result without using a call. "
         "Each call takes about half a minute and the number of calls is limited."
     ),
     "input_schema": {
@@ -48,9 +51,10 @@ TOOL_SCHEMA = {
             },
             "filter_rules": {
                 "type": "array",
-                "description": ("Filter rules in the same form as in your final answer, e.g. "
-                                "[{\"rule\": \"Skip when atr_pct > 0.02\", \"type\": \"skip\"}]. "
-                                "[] means only the analyzer's rules."),
+                "description": ("The complete filter set, in the same form as in your final "
+                                "answer, e.g. [{\"rule\": \"Skip when atr_pct > 0.02\", "
+                                "\"type\": \"skip\"}]. Replaces the current filters. [] means "
+                                "only the analyzer's rules."),
                 "items": {
                     "type": "object",
                     "properties": {"rule": {"type": "string"},
@@ -90,9 +94,24 @@ def merge_params(base: dict, changes: dict) -> dict:
 
 def _rule_text(rule: dict) -> str:
     thr = rule.get("threshold")
-    if isinstance(thr, float):
-        thr = f"{thr:.6g}"
+    try:
+        thr = f"{float(thr):.6g}"        # stored thresholds come back as text
+    except (TypeError, ValueError):
+        pass
     return f"{rule.get('feature')} {rule.get('operator')} {thr}"
+
+
+def _bundle_key(params: dict, filters: list) -> str:
+    """Identity of a bundle: parameters (without risk) and the applied filter set."""
+    def thr(v):
+        try:
+            return round(float(v), 10)
+        except (TypeError, ValueError):
+            return str(v)
+    rules = sorted((str(f.get("feature")), str(f.get("operator")), str(thr(f.get("threshold"))))
+                   for f in filters)
+    return json.dumps([{k: v for k, v in params.items() if k != "risk"}, rules],
+                      sort_keys=True, default=str)
 
 
 def _pct(x):
@@ -141,7 +160,10 @@ class BacktestTool:
         self.current_filters = load_active_filters(strategy)
         self.calls = []          # one record per executed backtest
         self.refused = 0         # calls after the budget ran out
+        self.repeats = 0         # bundles already tested (answered from memory)
         self._baseline = None
+        self._seen = {}          # bundle key -> result text
+        self._tested = []        # (params, applied filter dicts) per executed call
 
     # ── evaluation ──────────────────────────────────────────────────────
 
@@ -216,6 +238,13 @@ class BacktestTool:
         parsed = [_rule_text(r) for r in parse_claude_filter_rules(rules)]
         applied_text = [_rule_text(r) for r in applied]
         dropped = [r for r in parsed if r not in applied_text]
+        key = _bundle_key(params, applied)
+        if key in self._seen:
+            self.repeats += 1
+            out = json.loads(self._seen[key])
+            out["note"] = "Same bundle as an earlier call; this repeat did not use a call."
+            out["calls_left"] = self.max_calls - len(self.calls)
+            return json.dumps(out), False
 
         started = time.monotonic()
         try:
@@ -235,6 +264,7 @@ class BacktestTool:
         out["current_version"] = {k: baseline[k] for k in
                                   ("trades", "expectancy_pct", "win_rate_pct",
                                    "max_drawdown_pct", "first_half", "second_half")}
+        out["current_version"]["filters"] = [_rule_text(r) for r in self.current_filters]
         self.calls.append({"parameter_changes": changes,
                            "filter_rules": [r.get("rule") for r in rules],
                            "applied_filters": applied_text,
@@ -242,16 +272,41 @@ class BacktestTool:
                                       ("trades", "expectancy_pct", "win_rate_pct",
                                        "max_drawdown_pct", "first_half", "second_half")},
                            "seconds": seconds})
+        self._tested.append((params, applied))
         out["calls_left"] = self.max_calls - len(self.calls)
-        return json.dumps(out), False
+        text = json.dumps(out)
+        self._seen[key] = text
+        return text, False
 
-    def summary(self) -> dict:
+    def final_bundle(self, review: dict) -> dict:
+        """Whether the bundle the review proposes is one Claude backtested.
+
+        The final bundle is built the way promotion builds it: the full
+        ``updated_parameters`` (or the current ones), and ``candidate_filters``.
+        """
+        from src.learning.promotion import candidate_filters
+
+        proposed = review.get("updated_parameters") if isinstance(review, dict) else None
+        params = {k: v for k, v in (proposed if isinstance(proposed, dict) and proposed
+                                    else self.current_params).items() if k != "risk"}
+        try:
+            applied = candidate_filters(review, self.findings, self.filter_limit)
+        except Exception:
+            return {"tested": False, "applied_filters": []}
+        key = _bundle_key(params, applied)
+        return {"tested": any(_bundle_key(p, f) == key for p, f in self._tested),
+                "applied_filters": [_rule_text(r) for r in applied]}
+
+    def summary(self, review: dict = None) -> dict:
         """What gets stored with the review."""
-        return {"calls": self.calls, "refused": self.refused, "max_calls": self.max_calls,
-                "train_end": str(self.train_end),
-                "current_version": self._baseline and {
-                    k: self._baseline[k] for k in ("trades", "expectancy_pct",
-                                                   "first_half", "second_half")}}
+        out = {"calls": self.calls, "refused": self.refused, "repeats": self.repeats,
+               "max_calls": self.max_calls, "train_end": str(self.train_end),
+               "current_version": self._baseline and {
+                   k: self._baseline[k] for k in ("trades", "expectancy_pct",
+                                                  "first_half", "second_half")}}
+        if review is not None:
+            out["final_bundle"] = self.final_bundle(review)
+        return out
 
 
 def main():
