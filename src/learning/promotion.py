@@ -364,6 +364,10 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
                 performance={"holdout": saved, "win_rate": saved["win_rate"]},
                 notes=notes, commit=False,
             )
+            # Version numbers restart after --reset-params; the row id doesn't.
+            param_id = conn.execute(
+                "SELECT id FROM strategy_parameters WHERE strategy = ? AND version = ? "
+                "ORDER BY id DESC LIMIT 1", (strategy, version)).fetchone()[0]
             replace_active_filters(strategy, save_filters, conn=conn, commit=False)
             conn.commit()
         except Exception:
@@ -371,5 +375,5 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
             raise
         finally:
             conn.close()
-        evaluation["version"] = version
+        evaluation["version"], evaluation["param_id"] = version, param_id
     return evaluation

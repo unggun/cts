@@ -181,6 +181,7 @@ def build_journal(strategy: str, limit: int = 10, db_path: str = None,
         v["verdict"] = verdict(v["holdout"], v["paper"])
         trades = _num((v["holdout"] or {}).get("trades"))
         v["holdout_trades_per_week"] = trades / holdout_days * 7 if trades else None
+    by_id = {v["id"]: v for v in versions}
     by_number = {v["version"]: v for v in versions}
 
     reviews = []
@@ -189,15 +190,37 @@ def build_journal(strategy: str, limit: int = 10, db_path: str = None,
         ev = _loads(s["evaluation_json"])
         entry = {"session_id": s["id"], "created_at": s["created_at"],
                  "confidence": rec.get("confidence"), "hypothesis": hypothesis(rec),
-                 "outcome": outcome(ev), "candidate": None, "incumbent": None, "version": None}
+                 "outcome": outcome(ev), "candidate": None, "incumbent": None, "version": None,
+                 "param_id": None}
         if ev and "candidate" in ev:
             entry["candidate"] = ev.get("candidate") if isinstance(ev.get("candidate"), dict) else None
             entry["incumbent"] = ev.get("incumbent") if isinstance(ev.get("incumbent"), dict) else None
-            if ev.get("promoted") and ev.get("version") in by_number:
-                entry["version"] = ev["version"]
+            if ev.get("promoted"):
+                v = _promoted_version(ev, s["created_at"], by_id, by_number)
+                if v:
+                    entry["version"], entry["param_id"] = v["version"], v["id"]
         reviews.append(entry)
     return {"strategy": strategy, "current": versions[-1] if versions else None,
             "versions": versions, "reviews": reviews, "holdout_days": holdout_days}
+
+
+# A promotion is saved within seconds of its review; older evaluations carry only
+# the version number, which restarts at 1 after ``--reset-params``.
+LEGACY_LINK_WINDOW_SECONDS = 3600
+
+
+def _promoted_version(ev: dict, review_created_at: str, by_id: dict, by_number: dict):
+    """The parameter row a promoted review saved, or None if it no longer exists."""
+    if "param_id" in ev:
+        return by_id.get(ev["param_id"])
+    v = by_number.get(ev.get("version"))
+    if not v:
+        return None
+    try:
+        gap = (_parse(v["created_at"]) - _parse(review_created_at)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return v if 0 <= gap <= LEGACY_LINK_WINDOW_SECONDS else None
 
 
 def overview(db_path: str = None, config: dict = None, now: datetime = None) -> list:
@@ -253,7 +276,7 @@ def format_strategy(j: dict) -> str:
         lines += ["  " + line for line in format_version(j["current"], j["holdout_days"])]
     else:
         lines.append("No saved parameter version.")
-    by_number = {v["version"]: v for v in j["versions"]}
+    by_id = {v["id"]: v for v in j["versions"]}
     if j["reviews"]:
         lines += ["", "Claude reviews (newest first)"]
     for r in j["reviews"]:
@@ -268,7 +291,7 @@ def format_strategy(j: dict) -> str:
             lines.append(f"    Holdout: {_holdout_text(r['candidate'])} "
                          f"(current {_holdout_text(r['incumbent'])})")
         lines.append(f"    Outcome: {r['outcome']}")
-        v = by_number.get(r["version"])
+        v = by_id.get(r.get("param_id"))
         if v:
             lines.append(f"    Paper since: {_paper_text(v['paper'])} → {v['verdict']}")
     return "\n".join(lines)
