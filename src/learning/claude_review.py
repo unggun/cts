@@ -199,6 +199,10 @@ Based on this analysis, provide:
 
 6. **Updated Parameters**: Output the complete updated parameters as a JSON block that can be directly loaded into the system.
 
+7. **Hypothesis**: State your main idea in one sentence, and predict what the proposal will score on the
+   unseen holdout: expectancy per trade after costs (in percent, e.g. 0.25 for +0.25%) and number of trades.
+   Predictions are logged next to the holdout and paper-trading results, so give your honest estimate.
+
 IMPORTANT constraints:
 - Do NOT skip more than 1 day of the week. Skipping multiple days kills too many opportunities.
 - Parameter changes should be incremental (10-30% adjustments), not dramatic swings.
@@ -217,6 +221,8 @@ Respond with valid JSON in the following structure:
   "filter_rules": [{"rule": "Skip when feature_name > 0.15", "type": "skip", "expected_impact": "..."}],
   "risk_assessment": "...",
   "updated_parameters": { ... complete parameter dict ... },
+  "hypothesis": {"idea": "one sentence: the main thing you think is wrong and why your change fixes it",
+                 "expected_expectancy_pct": 0.25, "expected_trades": 80},
   "confidence": "low|medium|high",
   "notes": "..."
 }

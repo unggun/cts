@@ -541,6 +541,26 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
         print(f"  Telegram notification failed: {e}")
 
 
+def _journal_lines() -> list:
+    """Versions whose paper results are clearly behind their holdout result."""
+    try:
+        from src.learning.journal import behind_versions
+        behind = behind_versions()
+    except Exception as e:
+        print(f"  Journal check failed: {e}")
+        return []
+    if not behind:
+        return []
+    lines = ["\n⚠️ *Behind holdout on paper* (no automatic rollback):"]
+    for r in behind:
+        v = r["current"]
+        lines.append(_md(f"{r['strategy']} v{v['version']}: paper "
+                         f"{v['paper']['expectancy'] * 100:+.2f}% on {v['paper']['closed']} trades "
+                         f"vs holdout {v['holdout']['expectancy'] * 100:+.2f}%"))
+    lines.append(_md("Use /journal <strategy> for detail."))
+    return lines
+
+
 def _send_multi_strategy_telegram(config: dict, strategies: list):
     """Send a combined multi-strategy comparison via Telegram."""
     tg_cfg = config.get("notifications", {}).get("telegram", {})
@@ -587,6 +607,7 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
             f"{status_counts['BLOCKED']} BLOCKED | "
             f"{status_counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA"
         )
+        lines.extend(_journal_lines())
         lines.append("\n_Run parameter\\_store --trend for full history_")
 
         message = "\n".join(lines)

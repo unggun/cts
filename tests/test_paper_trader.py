@@ -54,6 +54,7 @@ def _trader(df, signal_rows, monkeypatch):
     t.params = {"fake": {"min_risk_reward": 1.5, "trailing_atr_multiplier": 3.0},
                 "risk": {"max_position_pct": 0.05, "max_positions": 3}}
     t.filters = []
+    t.param_row_id = 7
     t.positions = {}
     t._last_signal_bar = {}
     t.costs = {"fee_pct": 0.001, "slippage_pct": 0.0}
@@ -79,6 +80,9 @@ def test_signal_on_closed_candle_opens_once(db, monkeypatch):
     assert pos["entry_price"] == 102.0      # filled at current price
     assert pos["stop_loss"] == 90.0         # stop from the signal bar
     assert pos["id"] is not None
+    row = get_connection(db).execute("SELECT param_id FROM trade_journal WHERE id = ?",
+                                     (pos["id"],)).fetchone()
+    assert row["param_id"] == 7             # trade is linked to its parameter version
 
     # Close it, then poll again within the same hour: no re-entry on the same bar.
     t._close_position(get_connection(db), "BTC/IDR", 103.0, "target")
