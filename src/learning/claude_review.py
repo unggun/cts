@@ -16,6 +16,56 @@ from src.learning.filter_rules import load_active_filters
 
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
+MAX_TOKENS = 16000
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens",
+                "cache_read_input_tokens")
+LAST_TURN_NOTE = "No more backtests are available. Reply now with your final JSON answer."
+
+
+def converse(client, model: str, prompt: str, tool=None) -> tuple:
+    """Ask for the review, running ``run_backtest`` calls until Claude answers.
+
+    Without ``tool`` this is a single request, as before. With it, each turn's
+    ``tool_use`` blocks are executed and returned as ``tool_result``s; the
+    assistant content (thinking blocks included) is sent back unchanged. Calls
+    past the budget get an error result; the conversation stops after
+    ``max_calls + 2`` turns. Returns ``(last message, usage totals)``.
+    """
+    from src.learning.backtest_tool import TOOL_NAME, TOOL_SCHEMA
+
+    messages = [{"role": "user", "content": prompt}]
+    usage = {k: 0 for k in USAGE_FIELDS}
+    usage["turns"] = 0
+    max_turns = tool.max_calls + 2 if tool else 1
+    message = None
+    for turn in range(max_turns):
+        kwargs = dict(model=model, max_tokens=MAX_TOKENS, output_config={"effort": "high"},
+                      messages=messages)
+        if tool:
+            # The prompt is re-sent every turn; cache the growing prefix.
+            kwargs.update(tools=[TOOL_SCHEMA], cache_control={"type": "ephemeral"})
+        message = client.messages.create(**kwargs)
+        usage["turns"] += 1
+        for k in USAGE_FIELDS:
+            usage[k] += getattr(getattr(message, "usage", None), k, None) or 0
+        uses = [b for b in message.content if getattr(b, "type", None) == "tool_use"]
+        if not tool or message.stop_reason != "tool_use" or not uses:
+            break
+        results = []
+        for block in uses:
+            if block.name == TOOL_NAME:
+                text, is_error = tool.run(block.input)
+            else:
+                text, is_error = f"Unknown tool {block.name}", True
+            result = {"type": "tool_result", "tool_use_id": block.id, "content": text}
+            if is_error:
+                result["is_error"] = True
+            results.append(result)
+        if turn == max_turns - 2:
+            results.append({"type": "text", "text": LAST_TURN_NOTE})
+        messages.append({"role": "assistant", "content": message.content})
+        messages.append({"role": "user", "content": results})
+    return message, usage
 
 
 def extract_review(message) -> dict:
@@ -75,7 +125,7 @@ def build_analysis_prompt(findings: dict, time_patterns: dict,
                           current_params: dict, strategy: str,
                           sim_results: dict = None, history: list = None,
                           holdout_days: int = None, promotion_rule: str = None,
-                          active_filters: list = None) -> str:
+                          active_filters: list = None, backtest_budget: int = None) -> str:
     """Build the prompt for Claude to analyze trading patterns.
 
     ``promotion_rule`` describes the effective acceptance criteria
@@ -176,6 +226,23 @@ generalize. Every proposal is tested this way, whatever confidence you report; c
 reflects how likely you think it is to win here and to hold up in live trading.
 """
 
+    if backtest_budget:
+        prompt += f"""
+## Backtest Tool
+You can call `run_backtest` up to {backtest_budget} times before you answer. It backtests a
+bundle on the same train window as the data above (never the holdout), after fees and
+slippage, and shows the result next to the current version's, with expectancy in each
+chronological half of the window.
+- Use it to check your main hypothesis and how many trades your filters remove, not to
+  fine-tune numbers. Train results here often differ a lot from the holdout, and small
+  gains are usually noise: a change worth proposing helps in both halves and keeps enough
+  trades.
+- Filters are combined exactly as for your final proposal (the analyzer's skip rules are
+  added, then the cap applies); each result lists what was applied.
+- Backtests are optional. When you are done, reply with the final JSON described below;
+  the proposal is still judged only on the holdout.
+"""
+
     prompt += """
 ## Your Task
 
@@ -234,7 +301,7 @@ Respond with valid JSON in the following structure:
 def run_claude_review(strategy: str = None, run_id: str = None,
                       sim_results: dict = None, dry_run: bool = False,
                       run_ids: list = None, history: list = None,
-                      holdout_days: int = None) -> dict:
+                      holdout_days: int = None, train_end=None) -> dict:
     """Run a Claude-powered analysis of recent trading performance.
 
     Args:
@@ -244,6 +311,8 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         dry_run: If True, just build the prompt without calling API
         history: Past proposals with holdout outcomes, shown in the prompt
         holdout_days: Size of the holdout window Claude's proposal is judged on
+        train_end: Start of the holdout. When set (and ``learning.backtest_tool`` is
+            enabled), Claude can call ``run_backtest`` on candles before it.
         run_ids: Restrict analysis to these run_ids (e.g. just the
             current learning cycle's pair-level runs). Preferred over
             ``run_id`` when a cycle produces multiple runs.
@@ -252,9 +321,12 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         dict with Claude's proposal. Nothing is applied here; ``_session_id``
         is the learning_sessions row the evaluation gets recorded on.
     """
+    from src.learning.backtest_tool import BacktestTool, tool_config
     from src.learning.promotion import describe_rule, promotion_config
 
     config = load_config()
+    tool_cfg = tool_config(config)
+    use_tool = train_end is not None and tool_cfg["enabled"]
     learning_cfg = config.get("learning", {})
     api_key = learning_cfg.get("claude_api_key", "")
     model = learning_cfg.get("claude_model", DEFAULT_MODEL)
@@ -281,6 +353,7 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         strategy or "darvas", sim_results, history=history,
         holdout_days=holdout_days, promotion_rule=describe_rule(promotion_config(config)),
         active_filters=load_active_filters(strategy or "darvas"),
+        backtest_budget=tool_cfg["max_calls"] if use_tool else None,
     )
 
     if dry_run:
@@ -299,14 +372,12 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
 
+        tool = BacktestTool(strategy or "darvas", config, train_end, findings=findings,
+                            max_calls=tool_cfg["max_calls"]) if use_tool else None
+
         # Thinking is on by default on current models; max_tokens must
         # cover thinking plus the JSON reply.
-        message = client.messages.create(
-            model=model,
-            max_tokens=16000,
-            output_config={"effort": "high"},
-            messages=[{"role": "user", "content": prompt}],
-        )
+        message, usage = converse(client, model, prompt, tool)
 
         review = extract_review(message)
         if "error" in review:
@@ -314,6 +385,11 @@ def run_claude_review(strategy: str = None, run_id: str = None,
             return review
         if message.stop_reason == "max_tokens":
             print("⚠️ Claude response hit max_tokens — output may be truncated")
+        if tool:
+            review["backtests"] = tool.summary()
+            print(f"  Claude ran {len(tool.calls)} train-window backtest(s)"
+                  + (f", {tool.refused} refused over budget" if tool.refused else ""))
+        review["api_usage"] = usage
 
         # Save the learning session and results in a single connection
         conn = get_connection()

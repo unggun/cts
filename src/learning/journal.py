@@ -158,6 +158,34 @@ def _holdout_days(config: dict) -> int:
     return promotion_config(config)["holdout_days"]
 
 
+def _pct_num(x) -> str:
+    """A percent number (already ×100), as stored by the backtest tool."""
+    x = _num(x)
+    return "—" if x is None else f"{x:+.2f}%"
+
+
+def backtests(rec: dict) -> list:
+    """Claude's train-window backtests for a review, one short line each."""
+    bt = (rec or {}).get("backtests")
+    calls = bt.get("calls") if isinstance(bt, dict) else None
+    lines = []
+    for c in calls if isinstance(calls, list) else []:
+        if not isinstance(c, dict):
+            continue
+        changes = c.get("parameter_changes") if isinstance(c.get("parameter_changes"), dict) else {}
+        filters = c.get("applied_filters") if isinstance(c.get("applied_filters"), list) else []
+        what = "; ".join([f"{k}={v}" for k, v in changes.items()] +
+                         [f"skip {f}" for f in filters]) or "current params, no filters"
+        res = c.get("result") if isinstance(c.get("result"), dict) else {}
+        halves = [h if isinstance(h, dict) else {} for h in
+                  (res.get("first_half"), res.get("second_half"))]
+        lines.append(f"{what} → {res.get('trades', '—')} trades, "
+                     f"{_pct_num(res.get('expectancy_pct'))}/trade "
+                     f"(halves {_pct_num(halves[0].get('expectancy_pct'))} / "
+                     f"{_pct_num(halves[1].get('expectancy_pct'))})")
+    return lines
+
+
 def build_journal(strategy: str, limit: int = 10, db_path: str = None,
                   config: dict = None, now: datetime = None) -> dict:
     if config is None:
@@ -191,7 +219,7 @@ def build_journal(strategy: str, limit: int = 10, db_path: str = None,
         entry = {"session_id": s["id"], "created_at": s["created_at"],
                  "confidence": rec.get("confidence"), "hypothesis": hypothesis(rec),
                  "outcome": outcome(ev), "candidate": None, "incumbent": None, "version": None,
-                 "param_id": None}
+                 "param_id": None, "backtests": backtests(rec)}
         if ev and "candidate" in ev:
             entry["candidate"] = ev.get("candidate") if isinstance(ev.get("candidate"), dict) else None
             entry["incumbent"] = ev.get("incumbent") if isinstance(ev.get("incumbent"), dict) else None
@@ -287,6 +315,9 @@ def format_strategy(j: dict) -> str:
         if h["expected_expectancy"] is not None or h["expected_trades"] is not None:
             lines.append(f"    Predicted: {_pct(h['expected_expectancy'])}/trade, "
                          f"{h['expected_trades'] if h['expected_trades'] is not None else '—'} trades")
+        if r.get("backtests"):
+            lines.append(f"    Train backtests ({len(r['backtests'])}):")
+            lines += [f"      · {b}" for b in r["backtests"]]
         if r["candidate"]:
             lines.append(f"    Holdout: {_holdout_text(r['candidate'])} "
                          f"(current {_holdout_text(r['incumbent'])})")

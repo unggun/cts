@@ -55,6 +55,9 @@ python3 -m src.learning.journal
 python3 -m src.learning.journal --strategy cvd
 python3 -m src.learning.journal --strategy cvd --json
 
+# Run Claude's train-window backtest tool once on the current version (no API call)
+python3 -m src.learning.backtest_tool --strategy cvd
+
 # Telegram bot (listens for /positions, /equity, /help commands)
 python3 -m src.execution.telegram_bot
 
@@ -101,6 +104,10 @@ The analyzer learns from the **unfiltered** train trades, so a filter's blind sp
 ### Costs and Paper/Backtest Parity
 
 Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per side (`src/backtest/costs.py`). The paper trader enters only on closed candles (`src/data/candles.py`) and uses the same ATR trailing stop as the engine (`src/backtest/exits.py`), persisting ratcheted stops to `trade_journal`. The live trader still acts on the forming candle and does not trail fixed-target (OCO) positions.
+
+### Backtest Tool
+
+During its review Claude can call `run_backtest` (`src/learning/backtest_tool.py`) up to `learning.backtest_tool.max_calls` (6) times. It backtests a bundle (partial `parameter_changes` merged onto the current version, plus `filter_rules` combined and capped exactly like the final proposal) on the **train window only**: candles at or after the cycle's holdout start are cut before they reach the engine. Each result shows trades, expectancy after costs, win rate, max drawdown, expectancy per chronological half, and the current version's numbers. The calls are stored in `recommendations_json["backtests"]` (token use in `["api_usage"]`), listed by `/journal <strategy>`, and counted in the cycle's Telegram message. The holdout still decides promotion. Design: `docs/superpowers/specs/2026-11-11-run-backtest-tool-design.md`.
 
 ### Claude Confidence
 
