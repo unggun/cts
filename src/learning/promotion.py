@@ -26,6 +26,7 @@ DEFAULTS = {
     "min_holdout_trades": 20,
     "min_trade_ratio": 0.5,
     "min_expectancy_gain": 0.0005,
+    "min_expectancy": 0.001,   # a promoted version must earn at least 0.10%/trade after costs
     "max_drawdown_worsening": 0.05,
 }
 
@@ -83,8 +84,9 @@ def describe_rule(cfg: dict) -> str:
         f"trades and keep at least {cfg['min_trade_ratio']:.0%} of the current version's trades, "
         f"expectancy per trade improves by at least {cfg['min_expectancy_gain']:.2%}, and max "
         f"drawdown is not more than {cfg['max_drawdown_worsening'] * 100:g} points worse. If the "
-        f"current version itself has fewer than {cfg['min_holdout_trades']} holdout trades, the "
-        f"proposal only needs positive expectancy."
+        f"current version itself has fewer than {cfg['min_holdout_trades']} holdout trades, only "
+        f"the trade count and the floor below apply. In every case the proposal's expectancy "
+        f"must be at least {cfg['min_expectancy']:+.2%} per trade after costs."
     )
 
 
@@ -95,6 +97,11 @@ def decide(incumbent: dict, candidate: dict, cfg: dict, changed: bool) -> tuple[
     if candidate["trades"] < cfg["min_holdout_trades"]:
         return False, (f"only {candidate['trades']} holdout trades "
                        f"(need {cfg['min_holdout_trades']})")
+    if candidate["expectancy"] < cfg["min_expectancy"]:
+        weak = " (current version has too few holdout trades)" \
+            if incumbent["trades"] < cfg["min_holdout_trades"] else ""
+        return False, (f"expectancy {candidate['expectancy']:+.3%} is below the "
+                       f"{cfg['min_expectancy']:+.2%} floor{weak}")
     if incumbent["trades"] >= cfg["min_holdout_trades"]:
         if candidate["trades"] < cfg["min_trade_ratio"] * incumbent["trades"]:
             return False, (f"keeps only {candidate['trades'] / incumbent['trades']:.0%} of the "
@@ -108,9 +115,6 @@ def decide(incumbent: dict, candidate: dict, cfg: dict, changed: bool) -> tuple[
                            f"{incumbent['max_drawdown']:.1%}")
         return True, (f"expectancy {candidate['expectancy']:+.3%} vs current "
                       f"{incumbent['expectancy']:+.3%} on {candidate['trades']} holdout trades")
-    if candidate["expectancy"] <= 0:
-        return False, (f"current version has too few holdout trades and the candidate's "
-                       f"expectancy {candidate['expectancy']:+.3%} is not positive")
     return True, (f"expectancy {candidate['expectancy']:+.3%} on {candidate['trades']} "
                   f"holdout trades (current version had {incumbent['trades']})")
 
