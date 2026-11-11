@@ -46,9 +46,19 @@ def test_rejects_worse_drawdown():
     assert not ok and "drawdown" in reason
 
 
-def test_incumbent_without_trades_needs_positive_expectancy():
+def test_incumbent_without_trades_needs_the_expectancy_floor():
     assert pr.decide(_m(3, 0.0), _m(25, 0.001), CFG, changed=True)[0]
     assert not pr.decide(_m(3, 0.0), _m(25, -0.001), CFG, changed=True)[0]
+    ok, reason = pr.decide(_m(3, 0.0), _m(89, 0.0005), CFG, changed=True)   # mean_reversion, Nov 11
+    assert not ok and "floor" in reason and "too few" in reason
+
+
+def test_beating_a_losing_version_is_not_enough_below_the_floor():
+    # ma_crossover, Nov 11: +0.006% vs -0.049% cleared the gain but is break-even.
+    ok, reason = pr.decide(_m(146, -0.00049), _m(92, 0.00006), CFG, changed=True)
+    assert not ok and "below the +0.10% floor" in reason
+    loose = dict(CFG, min_expectancy=0.0)
+    assert pr.decide(_m(146, -0.00049), _m(92, 0.00006), loose, changed=True)[0]
 
 
 def test_rejects_unchanged_bundle():

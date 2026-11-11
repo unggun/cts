@@ -32,7 +32,10 @@ holdout start). These runs are not saved to `backtest_trades`.
 - if the incumbent has enough trades: candidate expectancy (mean net
   pnl_pct per trade) ≥ incumbent + `min_expectancy_gain` (0.05%), and
   candidate max drawdown ≤ incumbent + `max_drawdown_worsening` (5 pp)
-- if the incumbent has too few trades: candidate expectancy > 0
+- candidate expectancy ≥ `min_expectancy` (0.10% per trade after costs), whatever
+  the incumbent did (added 2026-11-11: the first run promoted ma_crossover at
+  +0.006% because it beat a losing incumbent, and removed mean_reversion's filters
+  at +0.05%; both are break-even after costs)
 - the bundle actually differs from the incumbent
 
 Claude confidence does not skip evaluation (changed 2026-11-08: in the first

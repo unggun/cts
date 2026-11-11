@@ -172,7 +172,7 @@ def test_prompt_states_effective_promotion_rule():
     prompt = build_analysis_prompt({}, {}, {}, "macd", holdout_days=90,
                                    promotion_rule=pr.describe_rule(cfg))
     assert "at least 40 holdout trades" in prompt and "0.10%" in prompt
-    assert "only needs positive expectancy" in prompt
+    assert "must be at least +0.10% per trade after costs" in prompt
     default = build_analysis_prompt({}, {}, {}, "macd", holdout_days=90)
     assert "at least 20 holdout trades" in default
 
