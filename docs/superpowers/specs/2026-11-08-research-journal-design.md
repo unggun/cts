@@ -40,6 +40,12 @@ never rolled back automatically.
     `entry_time` is the trader's local `datetime.now()`. UTC times are converted
     to local before comparing.
 - The live trader is not changed. The journal reads paper trades only.
+- A promotion also stores the new row's `param_id` in `evaluation_json`, and the
+  journal links each review to its version by that id. Version numbers restart
+  at 1 after `--reset-params`, so a number alone could point an old review at a
+  new version. Evaluations saved before this change have only the number. They
+  are linked by number only if that version was saved within an hour after the
+  review.
 
 ### Paper stats per version
 

@@ -90,6 +90,8 @@ def test_promotion_commits_params_and_filters_together(db, fake_strategy, monkey
     monkeypatch.setattr(pr, "replace_active_filters", real_replace)
     ev = pr.run_promotion("fake", review, {}, CONFIG, idx[300])
     assert ev["promoted"] and _versions(db) == 1
+    row = get_connection(db).execute("SELECT id, version FROM strategy_parameters").fetchone()
+    assert (ev["param_id"], ev["version"]) == (row[0], row[1])
 
 
 def test_invalid_parameters():

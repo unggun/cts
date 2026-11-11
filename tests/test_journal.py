@@ -125,7 +125,7 @@ def test_build_and_format_journal(db):
     rec = {"confidence": "medium", "hypothesis": {"idea": "counter-trend fails in strong trends",
                                                   "expected_expectancy_pct": 0.25,
                                                   "expected_trades": 80}}
-    ev = {"promoted": True, "version": v2, "reason": "better", "candidate": holdout,
+    ev = {"promoted": True, "version": v2, "param_id": id2, "reason": "better", "candidate": holdout,
           "incumbent": {"trades": 60, "expectancy": -0.001, "max_drawdown": 0.07}}
     for r, e in [(rec, ev), ({"confidence": "low"}, {"promoted": False, "reason": "nothing"}),
                  ({"confidence": "high"}, None)]:
@@ -144,6 +144,37 @@ def test_build_and_format_journal(db):
     assert "Predicted: +0.25%/trade, 80 trades" in text
     assert "Holdout (90d): 90 trades, +0.30%/trade, max DD 10.0%" in text
     assert "→ BEHIND" in text
+
+
+def _review(conn, ev, created_at):
+    ev = dict(ev, candidate={"trades": 90, "expectancy": 0.003}, incumbent={})
+    conn.execute("INSERT INTO learning_sessions (session_type, strategy, recommendations_json, "
+                 "evaluation_json, created_at) VALUES ('claude_review', 's', '{}', ?, ?)",
+                 (json.dumps(ev), created_at))
+    conn.commit()
+
+
+def test_reviews_link_to_the_saved_row_not_a_reused_version_number(db):
+    conn = get_connection(db)
+    v1, old_id = _version(conn, "2026-10-01 00:00:30")
+    _review(conn, {"promoted": True, "version": v1, "param_id": old_id, "reason": "old"},
+            "2026-10-01 00:00:00")
+    _review(conn, {"promoted": True, "version": v1, "reason": "legacy"}, "2026-10-01 00:00:00")
+    # --reset-params deletes the rows; numbering restarts at 1 with a new row id.
+    conn.execute("DELETE FROM strategy_parameters WHERE strategy = 's'")
+    conn.commit()
+    new_v, new_id = _version(conn, "2026-11-08 00:00:30", holdout={"trades": 90, "expectancy": 0.003})
+    assert new_v == v1 and new_id != old_id
+    _review(conn, {"promoted": True, "version": new_v, "param_id": new_id, "reason": "new"},
+            "2026-11-08 00:00:00")
+    _review(conn, {"promoted": True, "version": new_v, "reason": "new, legacy"},
+            "2026-11-08 00:00:10")
+
+    out = j.build_journal("s", db_path=db, config=CFG, now=NOW)
+    linked = {r["session_id"]: r["param_id"] for r in out["reviews"]}
+    assert sorted(linked.values(), key=str) == [new_id, new_id, None, None]
+    text = j.format_strategy(out)
+    assert text.count("Paper since:") == 2
 
 
 def test_overview_and_behind_list(db, monkeypatch):
