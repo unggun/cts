@@ -94,6 +94,17 @@ def test_promotion_commits_params_and_filters_together(db, fake_strategy, monkey
     assert (ev["param_id"], ev["version"]) == (row[0], row[1])
 
 
+def test_promoted_version_is_saved_without_the_legacy_filters_key(db, fake_strategy):
+    import json
+    idx = _seed(db)
+    review = {"updated_parameters": {"min_risk_reward": 0.0, "tp": 1.0,
+                                     "filters": {"skip_x": {"x": {"max": 1}}}}}
+    ev = pr.run_promotion("fake", review, {}, CONFIG, idx[300])
+    assert ev["promoted"]
+    saved = get_connection(db).execute("SELECT parameters_json FROM strategy_parameters").fetchone()[0]
+    assert "filters" not in json.loads(saved)
+
+
 def test_invalid_parameters():
     inc = {"rsi_vwap": {"rsi_period": 14, "atr_mult": 1.5, "threshold": 0, "on": True}}
     assert pr.invalid_parameters(inc, {"rsi_vwap": {"rsi_period": -2}}) == ["rsi_vwap.rsi_period"]

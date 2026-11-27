@@ -131,6 +131,7 @@ def build_analysis_prompt(findings: dict, time_patterns: dict,
     ``promotion_rule`` describes the effective acceptance criteria
     (``promotion.describe_rule``); defaults to the built-in thresholds.
     """
+    from src.learning.promotion import drop_legacy
     if promotion_rule is None:
         from src.learning.promotion import DEFAULTS, describe_rule
         promotion_rule = describe_rule(DEFAULTS)
@@ -139,7 +140,7 @@ def build_analysis_prompt(findings: dict, time_patterns: dict,
 
 ## Current Strategy Parameters
 ```json
-{json.dumps(current_params, indent=2)}
+{json.dumps(drop_legacy(current_params), indent=2)}
 ```
 
 ## Backtest Analysis Findings (all signals, no filters applied)
