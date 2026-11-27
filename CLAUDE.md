@@ -58,6 +58,10 @@ python3 -m src.learning.journal --strategy cvd --json
 # Run Claude's train-window backtest tool once on the current version (no API call)
 python3 -m src.learning.backtest_tool --strategy cvd
 
+# Regime gate: evidence per strategy (add --apply to store the decisions)
+python3 -m src.learning.regime_gate
+python3 -m src.learning.regime_gate --strategy candlestick --apply
+
 # Telegram bot (listens for /positions, /equity, /help commands)
 python3 -m src.execution.telegram_bot
 
@@ -109,13 +113,17 @@ Backtests and paper trades charge `costs.fee_pct` and `costs.slippage_pct` per s
 
 During its review Claude can call `run_backtest` (`src/learning/backtest_tool.py`) up to `learning.backtest_tool.max_calls` (6) times. It backtests a bundle (partial `parameter_changes` merged onto the current version, plus `filter_rules` combined and capped exactly like the final proposal) on the **train window only**: candles at or after the cycle's holdout start are cut before they reach the engine. Each result shows trades, expectancy after costs, win rate, max drawdown, expectancy per chronological half, and the current version's numbers. The calls are stored in `recommendations_json["backtests"]` (token use in `["api_usage"]`), listed by `/journal <strategy>`, and counted in the cycle's Telegram message. The holdout still decides promotion. Design: `docs/superpowers/specs/2026-11-11-run-backtest-tool-design.md`.
 
+### Regime Gate
+
+`src/learning/regime_gate.py` decides per strategy whether new entries are blocked while BTC's daily trend is down (`btc_st_1d_up` = 0, BTC daily Supertrend 10/3 on closed candles; a missing value doesn't block). The decision is made on every learning run after promotion, from backtests of the version that will trade over all stored candles, with and without the gate: **on** when gated expectancy beats ungated by `min_gain` (0.05%) in both chronological halves, is positive, and keeps `min_trades` (30); **off** when gated is worse over the whole window; otherwise unchanged. Claude doesn't decide it. Decisions are stored in the `regime_gates` table (newest row per strategy is current). The gate sits on top of the filter rules (no cap, never replaced by promotion) and applies in the cycle's filtered train backtests, promotion (both versions), the backtest tool and the paper trader (reloaded each loop, changes announced on Telegram); not in the analyzer's unfiltered backtest or the live trader. Settings: `learning.regime_gate` (`enabled`, `min_gain`, `min_trades`). Design: `docs/superpowers/specs/2026-11-27-regime-gate-design.md`.
+
 ### Claude Confidence
 
 Claude returns a confidence level (low/medium/high). It does not gate promotion: every usable proposal is tested on the holdout, which decides. Confidence is stored in `learning_sessions` and used by the live-readiness check. Filter rules change only through promotion (or a manual `--reset-filters`).
 
 ### Database Schema
 
-Seven tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_parameters` (versioned), `learning_sessions` (Claude review history), `simulation_results`, `trade_journal` (paper/live trades), `filter_rules` (active trade filters). Schema is in `src/data/database.py:init_db()` and `src/learning/filter_rules.py:init_filter_rules_table()`.
+Eight tables in SQLite: `ohlcv` (candle data), `backtest_trades`, `strategy_parameters` (versioned), `learning_sessions` (Claude review history), `simulation_results`, `trade_journal` (paper/live trades), `filter_rules` (active trade filters), `regime_gates` (per-strategy regime gate decisions). Schema is in `src/data/database.py:init_db()` and `src/learning/filter_rules.py:init_filter_rules_table()`.
 
 ### Paper & Live Trading
 
@@ -168,7 +176,7 @@ The weekly learning-cycle Telegram summary (`_send_multi_strategy_telegram` in `
 
 `src/indicators/features.py` extracts 40+ features per trade signal (volume ratios, ATR, RSI, moving averages, etc.) stored as JSON in `backtest_trades.features_json`. These features drive the winner/loser analysis in `src/learning/analyzer.py`.
 
-**Market regime features** (`src/indicators/regime.py`): `st_4h_up`, `st_1d_up` (Supertrend 10/3 direction), `adx_4h` (ADX 14), `btc_st_4h_up` and `btc_return_24h`. They come from 4h/daily candles built from the 1h data, and a 1h bar only sees higher-timeframe candles that had closed by its own close (no look-ahead). A value is missing (NaN) when its candles are stale or have a gap, and the 4h features are missing on timeframes coarser than 4h. The BTC pair is `trading.regime_pair` (default `BTC/IDR`); the paper trader refreshes it first each cycle, and promotion rejects a `btc_*` rule when its candles are missing. The engine, runner, promotion and paper trader all add them; the live trader does not yet, so a regime filter rule doesn't apply to live trades (`apply_filters` ignores missing features). They are ordinary features: the rule search and Claude can use them, and promotion decides.
+**Market regime features** (`src/indicators/regime.py`): `st_4h_up`, `st_1d_up` (Supertrend 10/3 direction), `adx_4h` (ADX 14), `btc_st_4h_up`, `btc_st_1d_up` (the regime gate's signal) and `btc_return_24h`. They come from 4h/daily candles built from the 1h data, and a 1h bar only sees higher-timeframe candles that had closed by its own close (no look-ahead). A value is missing (NaN) when its candles are stale or have a gap, and the 4h features are missing on timeframes coarser than 4h. The BTC pair is `trading.regime_pair` (default `BTC/IDR`); the paper trader refreshes it first each cycle, and promotion rejects a `btc_*` rule when its candles are missing. The engine, runner, promotion and paper trader all add them; the live trader does not yet, so a regime filter rule doesn't apply to live trades (`apply_filters` ignores missing features). They are ordinary features: the rule search and Claude can use them, and promotion decides.
 
 ## VPS Deployment
 

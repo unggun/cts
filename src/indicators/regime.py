@@ -9,6 +9,7 @@ Columns added (NaN until enough history):
     st_4h_up, st_1d_up   Supertrend(10, 3) direction: 1 up, 0 down
     adx_4h               ADX(14) on 4h candles (trend strength)
     btc_st_4h_up         BTC's 4h Supertrend direction
+    btc_st_1d_up         BTC's daily Supertrend direction (the regime gate's signal)
     btc_return_24h       BTC's return over the last 24 hours
 
 A value is NaN when its source candles are missing or stale, and the 4h
@@ -19,7 +20,8 @@ import pandas as pd
 
 from src.data.candles import timeframe_seconds
 
-REGIME_COLUMNS = ["st_4h_up", "st_1d_up", "adx_4h", "btc_st_4h_up", "btc_return_24h"]
+REGIME_COLUMNS = ["st_4h_up", "st_1d_up", "adx_4h", "btc_st_4h_up", "btc_st_1d_up",
+                  "btc_return_24h"]
 DEFAULT_REGIME_PAIR = "BTC/IDR"
 
 
@@ -137,11 +139,16 @@ def add_regime_columns(df: pd.DataFrame, btc_df: pd.DataFrame = None,
 
     if btc_df is None or btc_df.empty:
         df["btc_st_4h_up"] = np.nan
+        df["btc_st_1d_up"] = np.nan
         df["btc_return_24h"] = np.nan
         return df
     b4 = resample(btc_df, "4h")
     df["btc_st_4h_up"] = (_as_of(df, b4, "4h", supertrend_up(b4), timeframe)
                           if timeframe_seconds(timeframe) <= 4 * 3600
+                          else np.full(len(df), np.nan))
+    b1d = resample(btc_df, "1D")
+    df["btc_st_1d_up"] = (_as_of(df, b1d, "1D", supertrend_up(b1d), timeframe)
+                          if timeframe_seconds(timeframe) <= 86400
                           else np.full(len(df), np.nan))
     # BTC bars close at the same time as this pair's bars; only an exact match counts.
     close = btc_df["close"].astype(float)

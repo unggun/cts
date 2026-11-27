@@ -16,6 +16,7 @@ from src.backtest.engine import BacktestEngine
 from src.data.candles import last_closed_index
 from src.indicators.regime import DEFAULT_REGIME_PAIR, regime_pair
 from src.data.database import get_connection, load_ohlcv, load_latest_parameters, save_parameters
+from src.learning.regime_gate import gate_enabled
 from src.learning.filter_rules import (
     load_active_filters, parse_analyzer_filters, parse_claude_filter_rules,
     select_filters, init_filter_rules_table,
@@ -48,11 +49,13 @@ def holdout_start(config: dict, now: datetime = None) -> pd.Timestamp:
 
 def evaluate_bundle(strategy: str, params: dict, filters: list, dfs: dict,
                     timeframe: str, trade_start, costs: dict,
-                    initial_capital: float, btc_df: pd.DataFrame = None) -> dict:
+                    initial_capital: float, btc_df: pd.DataFrame = None,
+                    gate: bool = False) -> dict:
     """Backtest one bundle on the holdout window of every pair.
 
     Indicators warm up on the full history; entries start at ``trade_start``.
     ``btc_df`` feeds the btc_* regime features (default: ``dfs["BTC/IDR"]``).
+    ``gate`` applies the regime gate on top of ``filters``.
     Nothing is written to the database.
     """
     if btc_df is None:
@@ -60,7 +63,7 @@ def evaluate_bundle(strategy: str, params: dict, filters: list, dfs: dict,
     pnls, drawdowns, per_pair = [], [], {}
     for pair, df in dfs.items():
         engine = BacktestEngine(strategy, copy.deepcopy(params), initial_capital,
-                                costs=costs, filters=filters)
+                                costs=costs, filters=filters, gate=gate)
         res = engine.run(df.copy(), pair, timeframe, trade_start=trade_start,
                          btc_df=btc_df)
         trades = [t["pnl_pct"] for t in engine.trades]
@@ -324,6 +327,8 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     inc_params = load_latest_parameters(conn, strategy)
     if inc_params is None:
         inc_params = copy.deepcopy(config.get("strategy", {}).get(strategy, {}))
+    # Both versions are judged under the regime gate as it stands (decided separately).
+    gate = gate_enabled(strategy, config, conn=conn)
     conn.close()
     inc_params = drop_legacy(inc_params)
     dfs, btc_df = load_closed_candles(config)
@@ -339,7 +344,8 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     empty = {"trades": 0, "expectancy": 0.0, "win_rate": 0.0, "max_drawdown": 0.0,
              "per_pair": {}}
     incumbent = evaluate_bundle(strategy, dict(inc_params, risk=risk), inc_filters, dfs,
-                                timeframe, trade_start, costs, capital, btc_df=btc_df)
+                                timeframe, trade_start, costs, capital, btc_df=btc_df,
+                                gate=gate)
     bad = invalid_parameters(inc_params, cand_params)
     candidate, failure = empty, None
     btc_rules = sorted({f["feature"] for f in cand_filters if f["feature"].startswith("btc_")})
@@ -352,7 +358,7 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
         try:
             candidate = evaluate_bundle(strategy, dict(cand_params, risk=risk), cand_filters,
                                         dfs, timeframe, trade_start, costs, capital,
-                                        btc_df=btc_df)
+                                        btc_df=btc_df, gate=gate)
         except Exception as e:  # a malformed proposal must not abort the cycle
             failure = f"candidate backtest failed: {type(e).__name__}: {e}"
     if failure:
@@ -363,6 +369,7 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
 
     evaluation = {
         "holdout_start": str(trade_start),
+        "regime_gate": gate,
         "incumbent": incumbent,
         "candidate": candidate,
         "candidate_filters": [f"{f['feature']} {f['operator']} {f['threshold']}"
@@ -377,7 +384,8 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     already_tested = not failure and not bundle_changed(inc_params, [], cand_params, cand_filters)
     if not promote and inc_filters and not already_tested:
         no_filters = evaluate_bundle(strategy, dict(inc_params, risk=risk), [], dfs,
-                                     timeframe, trade_start, costs, capital, btc_df=btc_df)
+                                     timeframe, trade_start, costs, capital, btc_df=btc_df,
+                                     gate=gate)
         evaluation["no_filters"] = no_filters
         ok, why = decide(incumbent, no_filters, cfg, changed=True)
         if ok:

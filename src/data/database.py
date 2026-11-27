@@ -193,6 +193,10 @@ def init_db(db_path: str = None):
             if "duplicate column" not in str(e):
                 raise
 
+    # ── Regime gate decisions (src/learning/regime_gate.py) ──
+    from src.learning.regime_gate import init_regime_gate_table
+    init_regime_gate_table(conn)
+
     conn.commit()
     conn.close()
     print(f"Database initialized at {db_path or get_db_path()}", file=sys.stderr)

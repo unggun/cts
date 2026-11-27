@@ -186,6 +186,12 @@ learning:
   backtest_tool:
     enabled: true
     max_calls: 6
+  # Regime gate: per strategy, block new buys while BTC's daily trend is down when
+  # a year of backtests shows it helps in both halves (decided each learning run).
+  regime_gate:
+    enabled: true
+    min_gain: 0.0005
+    min_trades: 30
 
 notifications:
   telegram:

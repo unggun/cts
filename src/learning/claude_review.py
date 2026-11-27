@@ -125,7 +125,8 @@ def build_analysis_prompt(findings: dict, time_patterns: dict,
                           current_params: dict, strategy: str,
                           sim_results: dict = None, history: list = None,
                           holdout_days: int = None, promotion_rule: str = None,
-                          active_filters: list = None, backtest_budget: int = None) -> str:
+                          active_filters: list = None, backtest_budget: int = None,
+                          regime_gate: dict = None) -> str:
     """Build the prompt for Claude to analyze trading patterns.
 
     ``promotion_rule`` describes the effective acceptance criteria
@@ -227,6 +228,16 @@ generalize. Every proposal is tested this way, whatever confidence you report; c
 reflects how likely you think it is to win here and to hold up in live trading.
 """
 
+    if regime_gate is not None:
+        on = bool(regime_gate.get("enabled"))
+        prompt += f"""
+## Regime Gate
+This strategy's new entries are {"currently BLOCKED while BTC's daily trend is down (btc_st_1d_up = 0)" if on else "currently NOT gated by BTC's daily trend"}.
+The gate is decided separately from your proposal, from a year of backtests of the version
+that trades ({regime_gate.get("reason") or "no decision stored yet"}). Do not propose a filter
+on btc_st_1d_up for this; the holdout test and the backtest tool apply the gate as it stands.
+"""
+
     if backtest_budget:
         prompt += f"""
 ## Backtest Tool
@@ -304,6 +315,17 @@ Respond with valid JSON in the following structure:
     return prompt
 
 
+def _gate_state_for_prompt(strategy: str, config: dict):
+    """The stored regime-gate decision for the prompt; None when the gate is disabled."""
+    from src.learning.regime_gate import gate_config, load_gate_state
+    if not gate_config(config)["enabled"]:
+        return None
+    try:
+        return load_gate_state(strategy) or {"enabled": False, "reason": None}
+    except Exception:
+        return None
+
+
 def run_claude_review(strategy: str = None, run_id: str = None,
                       sim_results: dict = None, dry_run: bool = False,
                       run_ids: list = None, history: list = None,
@@ -360,6 +382,7 @@ def run_claude_review(strategy: str = None, run_id: str = None,
         holdout_days=holdout_days, promotion_rule=describe_rule(promotion_config(config)),
         active_filters=load_active_filters(strategy or "darvas"),
         backtest_budget=tool_cfg["max_calls"] if use_tool else None,
+        regime_gate=_gate_state_for_prompt(strategy or "darvas", config),
     )
 
     if dry_run:

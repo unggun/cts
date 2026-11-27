@@ -125,7 +125,8 @@ class BacktestTool:
     """
 
     def __init__(self, strategy: str, config: dict, train_end, findings: dict = None,
-                 dfs: dict = None, btc_df: pd.DataFrame = None, max_calls: int = None):
+                 dfs: dict = None, btc_df: pd.DataFrame = None, max_calls: int = None,
+                 gate: bool = None):
         from src.backtest.costs import trading_costs
         from src.learning.filter_rules import _configured_filter_limit
         from src.learning.promotion import load_closed_candles
@@ -139,6 +140,10 @@ class BacktestTool:
         self.capital = config.get("simulation", {}).get("initial_capital", 10_000_000)
         self.risk = config.get("risk", {})
         self.filter_limit = _configured_filter_limit()
+        if gate is None:
+            from src.learning.regime_gate import gate_enabled
+            gate = gate_enabled(strategy, config)
+        self.gate = bool(gate)      # applied to every bundle, like promotion does
 
         if dfs is None:
             dfs, btc_df = load_closed_candles(config, end=self.train_end)
@@ -172,7 +177,8 @@ class BacktestTool:
         trades, drawdowns, per_pair = [], [], {}
         for pair, df in self.dfs.items():
             engine = BacktestEngine(self.strategy, dict(copy.deepcopy(params), risk=self.risk),
-                                    self.capital, costs=self.costs, filters=filters)
+                                    self.capital, costs=self.costs, filters=filters,
+                                    gate=self.gate)
             res = engine.run(df.copy(), pair, self.timeframe, btc_df=self.btc_df)
             per_pair[pair] = len(engine.trades)
             trades.extend(engine.trades)
@@ -258,6 +264,7 @@ class BacktestTool:
 
         out = dict(result)
         out["applied_filters"] = applied_text
+        out["regime_gate"] = "on" if self.gate else "off"
         if dropped:
             out["dropped_filters"] = dropped
         warnings = []
@@ -309,6 +316,7 @@ class BacktestTool:
     def summary(self, review: dict = None) -> dict:
         """What gets stored with the review."""
         out = {"calls": self.calls, "refused": self.refused, "repeats": self.repeats,
+               "regime_gate": self.gate,
                "max_calls": self.max_calls, "train_end": str(self.train_end),
                "current_version": self._baseline and {
                    k: self._baseline[k] for k in ("trades", "expectancy_pct",
