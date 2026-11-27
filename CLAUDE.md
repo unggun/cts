@@ -83,7 +83,7 @@ All modules run as `python -m src.<module>` from the project root. Config is loa
 
 ### Parameter Versioning
 
-Strategy parameters are versioned in `strategy_parameters` table. New versions are only saved by promotion (`src/learning/promotion.py`) after a proposal wins on held-out data. `load_latest_parameters()` retrieves the most recent version for a strategy; paper traders reload it automatically when a new version appears.
+Strategy parameters are versioned in `strategy_parameters` table. New versions are only saved by promotion (`src/learning/promotion.py`) after a proposal wins on held-out data. `load_latest_parameters()` retrieves the most recent version for a strategy; paper traders reload it automatically when a new version appears. Older versions carry a nested `filters` dict in their parameters that no strategy reads (filters live in `filter_rules`); `promotion.drop_legacy` removes it from Claude's prompt, from bundle comparisons and from newly saved versions.
 
 ### Auto-Learning Loop
 

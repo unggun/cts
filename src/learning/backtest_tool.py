@@ -156,7 +156,8 @@ class BacktestTool:
             conn.close()
         if params is None:
             params = copy.deepcopy(config.get("strategy", {}).get(strategy, {}))
-        self.current_params = {k: v for k, v in params.items() if k != "risk"}
+        from src.learning.promotion import drop_legacy
+        self.current_params = {k: v for k, v in drop_legacy(params).items() if k != "risk"}
         self.current_filters = load_active_filters(strategy)
         self.calls = []          # one record per executed backtest
         self.refused = 0         # calls after the budget ran out
@@ -222,7 +223,8 @@ class BacktestTool:
                 or not all(isinstance(r, dict) for r in rules):
             return ("Error: parameter_changes must be an object and filter_rules a list of "
                     "{\"rule\": ..., \"type\": ...} objects."), True
-        changes = {k: v for k, v in changes.items() if k != "risk"}
+        legacy = sorted(k for k in changes if k in ("filters",))
+        changes = {k: v for k, v in changes.items() if k not in ("risk", "filters")}
 
         params = merge_params(self.current_params, changes)
         bad = invalid_parameters(self.current_params, params)
@@ -258,9 +260,15 @@ class BacktestTool:
         out["applied_filters"] = applied_text
         if dropped:
             out["dropped_filters"] = dropped
+        warnings = []
         if unknown:
-            out["warning"] = (f"not parameters of the current version: {', '.join(unknown)} "
-                              f"(the strategy may ignore them)")
+            warnings.append(f"not parameters of the current version: {', '.join(unknown)} "
+                            f"(the strategy may ignore them)")
+        if legacy:
+            warnings.append("parameter_changes.filters was ignored: no strategy reads it; "
+                            "put filter rules in filter_rules")
+        if warnings:
+            out["warning"] = "; ".join(warnings)
         out["current_version"] = {k: baseline[k] for k in
                                   ("trades", "expectancy_pct", "win_rate_pct",
                                    "max_drawdown_pct", "first_half", "second_half")}
@@ -287,8 +295,9 @@ class BacktestTool:
         from src.learning.promotion import candidate_filters
 
         proposed = review.get("updated_parameters") if isinstance(review, dict) else None
-        params = {k: v for k, v in (proposed if isinstance(proposed, dict) and proposed
-                                    else self.current_params).items() if k != "risk"}
+        from src.learning.promotion import drop_legacy
+        params = {k: v for k, v in drop_legacy(proposed if isinstance(proposed, dict) and proposed
+                                               else self.current_params).items() if k != "risk"}
         try:
             applied = candidate_filters(review, self.findings, self.filter_limit)
         except Exception:

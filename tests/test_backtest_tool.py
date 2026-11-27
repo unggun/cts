@@ -260,3 +260,31 @@ def test_records_whether_the_final_bundle_was_tested(db, seen):
     other = dict(tested, filter_rules=[{"rule": "Skip when y > 5"}, {"rule": "Skip when z > 5"}])
     assert tool.final_bundle(other)["tested"] is False
     assert tool.final_bundle(dict(tested, updated_parameters=dict(full, tp=0.8)))["tested"] is False
+
+
+# ── legacy params["filters"] (no strategy reads it) ─────────────────────
+
+LEGACY = {"min_risk_reward": 0.0, "tp": 0.5, "period": 10,
+          "filters": {"skip_high_atr": {"atr_14": {"max": 80000}}}}
+
+
+def test_legacy_filters_key_is_ignored_by_the_tool(db, seen):
+    save_parameters(get_connection(db), "fake", LEGACY)
+    tool = bt.BacktestTool("fake", CONFIG, TRAIN_END)
+    assert "filters" not in tool.current_params
+    out = json.loads(tool.run({"parameter_changes": {"tp": 0.7, "filters": {"x": 1}},
+                               "filter_rules": []})[0])
+    assert "filters was ignored" in out["warning"]
+    assert "filters" not in seen["params"][-1]
+    # Claude's final answer rewrites the legacy dict; it is still the tested bundle.
+    final = {"updated_parameters": dict(LEGACY, tp=0.7, filters={"mirrored": {"rule": 1}}),
+             "filter_rules": []}
+    assert tool.final_bundle(final)["tested"] is True
+
+
+def test_prompt_and_promotion_drop_the_legacy_key():
+    prompt = build_analysis_prompt({}, {}, LEGACY, "macd", holdout_days=90)
+    assert "skip_high_atr" not in prompt and '"period": 10' in prompt
+    assert pr.drop_legacy(LEGACY) == {"min_risk_reward": 0.0, "tp": 0.5, "period": 10}
+    assert not pr.bundle_changed(LEGACY, [], dict(LEGACY, filters={}), [])
+    assert pr.bundle_changed(LEGACY, [], dict(LEGACY, tp=0.6), [])

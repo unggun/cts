@@ -165,9 +165,20 @@ def invalid_parameters(inc_params: dict, cand_params: dict, path: str = "") -> l
     return bad
 
 
+# Old versions carry a nested "filters" dict in their parameters. No strategy reads
+# it (filter rules live in the filter_rules table), but Claude kept editing it, so
+# it is dropped wherever parameters are shown, compared or saved.
+LEGACY_PARAM_KEYS = ("filters",)
+
+
+def drop_legacy(params: dict) -> dict:
+    """``params`` without the unused legacy keys."""
+    return {k: v for k, v in (params or {}).items() if k not in LEGACY_PARAM_KEYS}
+
+
 def bundle_changed(inc_params: dict, inc_filters: list,
                    cand_params: dict, cand_filters: list) -> bool:
-    strip = lambda p: {k: v for k, v in p.items() if k != "risk"}
+    strip = lambda p: {k: v for k, v in drop_legacy(p).items() if k != "risk"}
     return (json.dumps(strip(inc_params), sort_keys=True, default=str)
             != json.dumps(strip(cand_params), sort_keys=True, default=str)
             or _filter_key(inc_filters) != _filter_key(cand_filters))
@@ -314,12 +325,13 @@ def run_promotion(strategy: str, review: dict, findings: dict, config: dict,
     if inc_params is None:
         inc_params = copy.deepcopy(config.get("strategy", {}).get(strategy, {}))
     conn.close()
+    inc_params = drop_legacy(inc_params)
     dfs, btc_df = load_closed_candles(config)
     btc_pair = regime_pair(config)
 
     inc_filters = load_active_filters(strategy)
     proposed = review.get("updated_parameters")
-    cand_params = copy.deepcopy(proposed) if isinstance(proposed, dict) and proposed \
+    cand_params = drop_legacy(copy.deepcopy(proposed)) if isinstance(proposed, dict) and proposed \
         else copy.deepcopy(inc_params)
     cand_filters = candidate_filters(review, findings, _configured_filter_limit())
 
