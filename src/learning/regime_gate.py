@@ -134,7 +134,7 @@ def gather_evidence(strategy: str, config: dict, dfs: dict = None,
     from src.backtest.engine import BacktestEngine
     from src.data.database import load_latest_parameters
     from src.learning.filter_rules import load_active_filters
-    from src.learning.promotion import load_closed_candles
+    from src.learning.promotion import drop_legacy, load_closed_candles
 
     if dfs is None:
         dfs, btc_df = load_closed_candles(config)
@@ -147,9 +147,7 @@ def gather_evidence(strategy: str, config: dict, dfs: dict = None,
         conn.close()
     if params is None:
         params = copy.deepcopy(config.get("strategy", {}).get(strategy, {}))
-    # The legacy nested "filters" dict is unused by every strategy.
-    params = {k: v for k, v in params.items() if k not in ("filters", "risk")}
-    params["risk"] = config.get("risk", {})
+    params = dict(drop_legacy(params), risk=config.get("risk", {}))
     filters = load_active_filters(strategy)
     costs = trading_costs(config)
     capital = config.get("simulation", {}).get("initial_capital", 10_000_000)
