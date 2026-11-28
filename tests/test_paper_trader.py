@@ -112,3 +112,16 @@ def test_close_position_charges_costs(db, monkeypatch):
     row = get_connection(db).execute(
         "SELECT pnl_pct FROM trade_journal WHERE exit_time IS NOT NULL").fetchone()
     assert row["pnl_pct"] < 0
+
+
+def test_regime_gate_blocks_paper_entries(db, monkeypatch, capsys):
+    df = _candles()
+    t = _trader(df, signal_rows=[-2], monkeypatch=monkeypatch)
+    monkeypatch.setattr(pt, "extract_features", lambda frame, i: {"btc_st_1d_up": 0.0})
+    t.gate = True
+    t._process_pair("BTC/IDR", "1h")
+    assert t.positions == {} and "GATED BTC/IDR" in capsys.readouterr().out
+    t._last_signal_bar = {}
+    t.gate = False
+    t._process_pair("BTC/IDR", "1h")
+    assert "BTC/IDR" in t.positions

@@ -23,6 +23,7 @@ from src.backtest.costs import net_pnl, trading_costs
 from src.backtest.exits import trail_stop
 from src.data.database import get_connection, save_backtest_trades, load_ohlcv
 from src.learning.filter_rules import load_active_filters, apply_filters
+from src.learning.regime_gate import gate_blocks, gate_enabled
 
 # Strategy registry — maps strategy name to (detect_fn, signal_col, levels_fn)
 STRATEGY_REGISTRY = {
@@ -46,7 +47,7 @@ class BacktestEngine:
 
     def __init__(self, strategy: str, params: dict, initial_capital: float = 10_000_000,
                  costs: dict = None, use_filters: bool = True,
-                 filters: list = None):
+                 filters: list = None, gate: bool = None):
         self.strategy = strategy
         self.params = params
         self.initial_capital = initial_capital
@@ -59,6 +60,13 @@ class BacktestEngine:
             self.filters = filters
         else:
             self.filters = load_active_filters(strategy) if use_filters else []
+        # The regime gate sits on top of the filters. By default it follows the
+        # stored decision when the DB filters are used; callers that pass their
+        # own filters say explicitly whether the gate applies.
+        if gate is None:
+            gate = use_filters and filters is None and gate_enabled(strategy)
+        self.gate = bool(gate)
+        self.gate_blocked_count = 0
         self.filtered_count = 0
         self.signal_count = 0
         self.rr_rejected_count = 0
@@ -138,6 +146,10 @@ class BacktestEngine:
 
                 # Extract features
                 features = extract_features(df, i)
+
+                if self.gate and gate_blocks(features):
+                    self.gate_blocked_count += 1
+                    continue
 
                 # Apply filter rules
                 if self.filters:
@@ -263,6 +275,7 @@ class BacktestEngine:
                 "signal_count": self.signal_count,
                 "rr_rejected": self.rr_rejected_count,
                 "filtered_trades": self.filtered_count,
+                "gate_blocked": self.gate_blocked_count,
                 "message": "No trades generated",
             }
 
@@ -312,6 +325,7 @@ class BacktestEngine:
             "signal_count": self.signal_count,
             "rr_rejected": self.rr_rejected_count,
             "filtered_trades": self.filtered_count,
+            "gate_blocked": self.gate_blocked_count,
             "winners": len(winners),
             "losers": len(losers),
             "win_rate": len(winners) / len(self.trades),

@@ -15,6 +15,7 @@ import math
 from datetime import datetime, timezone
 
 from src.data.database import get_connection, init_db
+from src.learning.regime_gate import load_gate_state
 from src.execution.live_readiness import KNOWN_STRATEGIES
 
 MIN_PAPER_TRADES = 20
@@ -205,6 +206,7 @@ def build_journal(strategy: str, limit: int = 10, db_path: str = None,
             "SELECT id, created_at, recommendations_json, evaluation_json FROM learning_sessions "
             "WHERE strategy = ? AND session_type = 'claude_review' ORDER BY id DESC LIMIT ?",
             (strategy, limit)).fetchall()
+        gate = load_gate_state(strategy, conn=conn)
     finally:
         conn.close()
 
@@ -233,7 +235,8 @@ def build_journal(strategy: str, limit: int = 10, db_path: str = None,
                     entry["version"], entry["param_id"] = v["version"], v["id"]
         reviews.append(entry)
     return {"strategy": strategy, "current": versions[-1] if versions else None,
-            "versions": versions, "reviews": reviews, "holdout_days": holdout_days}
+            "versions": versions, "reviews": reviews, "holdout_days": holdout_days,
+            "regime_gate": gate}
 
 
 # A promotion is saved within seconds of its review; older evaluations carry only
@@ -260,7 +263,8 @@ def overview(db_path: str = None, config: dict = None, now: datetime = None) -> 
     for strategy in KNOWN_STRATEGIES:
         j = build_journal(strategy, limit=0, db_path=db_path, config=config, now=now)
         if j["current"]:
-            rows.append({"strategy": strategy, "current": j["current"]})
+            rows.append({"strategy": strategy, "current": j["current"],
+                         "gate": bool((j.get("regime_gate") or {}).get("enabled"))})
     return rows
 
 
@@ -308,6 +312,10 @@ def format_strategy(j: dict) -> str:
         lines += ["  " + line for line in format_version(j["current"], j["holdout_days"])]
     else:
         lines.append("No saved parameter version.")
+    gate = j.get("regime_gate")
+    if gate:
+        state = "ON (no new buys while BTC's daily trend is down)" if gate["enabled"] else "off"
+        lines.append(f"Regime gate: {state}, decided {gate['decided_at']} UTC: {gate['reason']}")
     by_id = {v["id"]: v for v in j["versions"]}
     if j["reviews"]:
         lines += ["", "Claude reviews (newest first)"]
@@ -339,7 +347,9 @@ def format_overview(rows: list) -> str:
         hexp = _num((v["holdout"] or {}).get("expectancy"))
         lines.append(f"{r['strategy']:15s} v{v['version']:<3d} holdout {_pct(hexp):>8s} | "
                      f"paper {_pct(v['paper']['expectancy']):>8s} on {v['paper']['closed']:3d} | "
-                     f"{v['verdict']}")
+                     f"{v['verdict']}{' 🛡' if r.get('gate') else ''}")
+    if any(r.get("gate") for r in rows):
+        lines += ["", "🛡 = regime gate on (no new buys while BTC's daily trend is down)"]
     return "\n".join(lines)
 
 

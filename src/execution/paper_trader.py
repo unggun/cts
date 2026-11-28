@@ -26,6 +26,7 @@ from src.data.candles import last_closed_index
 from src.indicators.features import extract_features
 from src.indicators.regime import add_regime_columns, regime_pair
 from src.learning.filter_rules import load_active_filters, apply_filters
+from src.learning.regime_gate import GATE_REASON, gate_blocks, gate_enabled
 
 
 class PaperTrader:
@@ -44,6 +45,9 @@ class PaperTrader:
         self._apply_params(row)
         if self.filters:
             print(f"  Loaded {len(self.filters)} active filter rules")
+        self.gate = self._read_gate()
+        if self.gate:
+            print(f"  🛡 Regime gate on: no new buys while BTC's daily trend is down")
 
         # State
         self.positions = {}  # pair -> position dict
@@ -234,6 +238,11 @@ class PaperTrader:
                     if len(self.positions) < max_pos:
                         features = extract_features(df, signal_idx)
 
+                        if getattr(self, "gate", False) and gate_blocks(features):
+                            print(f"  ⏭️ GATED {pair}: {GATE_REASON}")
+                            conn.close()
+                            return
+
                         # Apply filter rules
                         if self.filters:
                             should_skip, skip_reason = apply_filters(features, self.filters)
@@ -288,6 +297,23 @@ class PaperTrader:
         if key(filters) != key(self.filters):
             self.filters = filters
             print(f"  🔄 Filter rules updated ({len(filters)} active)")
+
+        gate = self._read_gate()
+        changed = gate != getattr(self, "gate", False)
+        self.gate = gate
+        if changed:
+            text = ("regime gate ON: no new buys while BTC's daily trend is down" if gate
+                    else "regime gate OFF: buying in any BTC trend again")
+            print(f"  🛡 {text}")
+            self._notify(f"🛡 *PAPER {self.strategy}*: {text}")
+
+    def _read_gate(self) -> bool:
+        """The stored regime-gate decision; keeps the current state if it can't be read."""
+        try:
+            return gate_enabled(self.strategy, self.config)
+        except Exception as e:
+            print(f"  ⚠️ Could not read the regime gate: {e}")
+            return getattr(self, "gate", False)
 
     def _open_position(self, conn, pair: str, levels: dict, features: dict):
         """Open a paper trading position."""

@@ -95,6 +95,30 @@ def check_quality_gates(all_results: dict,
     return len(failures) == 0, failures
 
 
+def _review_regime_gate(strategy: str, config: dict, dry_run: bool) -> dict:
+    """Decide (and, unless dry run, store) whether new entries are gated."""
+    from src.learning.regime_gate import format_review, review_gate
+    print("\n  Reviewing the regime gate (BTC daily trend) over all stored candles...")
+    try:
+        result = review_gate(strategy, config, apply=not dry_run)
+    except Exception as e:  # the gate must never abort the cycle
+        print(f"  Regime gate review failed: {type(e).__name__}: {e}")
+        return {"error": str(e)}
+    print("  " + format_review(result).replace("\n", "\n  "))
+    return result
+
+
+def _gate_lines(review: dict) -> list:
+    """Telegram lines for the regime gate decision."""
+    g = review.get("regime_gate") if isinstance(review, dict) else None
+    if not isinstance(g, dict) or "enabled" not in g:
+        return []
+    if g.get("changed"):
+        state = "ON: no new buys while BTC's daily trend is down" if g["enabled"] else "OFF"
+        return [f"\n🛡 *Regime gate {state}*", _md(g.get("reason", ""))]
+    return ["\n🛡 Regime gate on"] if g["enabled"] else []
+
+
 def _verify_and_promote(strategy: str, review: dict, findings: dict, config: dict,
                         trade_start, dry_run: bool) -> dict:
     """Backtest Claude's proposal against the current version on the holdout.
@@ -291,6 +315,9 @@ def run_full_cycle(strategy: str = "darvas", skip_download: bool = False,
     # ── Step 5b: Verify the proposal on held-out data, promote if better ──
     review["promotion"] = _verify_and_promote(strategy, review, findings, config,
                                               trade_start, dry_run)
+
+    # ── Step 5c: Re-decide the regime gate for the version that will trade ──
+    review["regime_gate"] = _review_regime_gate(strategy, config, dry_run)
 
     # ── Step 6: Summary ──
     print(f"\n[6/6] Cycle complete.")
@@ -524,6 +551,7 @@ def _send_telegram_summary(config: dict, strategy: str, results: dict,
                          f"before proposing{tested}")
 
         lines.extend(_promotion_lines(strategy, review))
+        lines.extend(_gate_lines(review))
 
         message = "\n".join(lines)
 
@@ -585,6 +613,7 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
         import requests
         from src.learning.parameter_store import get_performance_trend
         from src.execution.live_readiness import build_report, short_summary
+        from src.learning.regime_gate import gate_enabled
 
         lines = ["📊 *Multi-Strategy Weekly Summary*\n"]
 
@@ -601,10 +630,15 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
                 report = None
                 icon_label = ""
 
+            try:
+                shield = " 🛡" if gate_enabled(strategy, config) else ""
+            except Exception:
+                shield = ""
             if trend:
                 latest = trend[-1]
                 wr = latest.get("win_rate_display", "?")
                 suffix = f" {icon_label.split()[0]}" if icon_label else ""
+                suffix += shield
                 lines.append(f"*{strategy}*: WR {wr} (v{latest['version']}){suffix}")
             elif report is not None:
                 # No trend yet but readiness was computed — still show the row
@@ -616,6 +650,7 @@ def _send_multi_strategy_telegram(config: dict, strategies: list):
             f"{status_counts['BLOCKED']} BLOCKED | "
             f"{status_counts['INSUFFICIENT_DATA']} INSUFFICIENT_DATA"
         )
+        lines.append("🛡 = regime gate on (no new buys while BTC's daily trend is down)")
         lines.extend(_journal_lines())
         lines.append("\n_Run parameter\\_store --trend for full history_")
 
